@@ -219,7 +219,7 @@ async function uploadFileToStorage(file, path) {
 }
 async function downloadFromStorage(path) {
   const { data, error } = await supabaseClient.storage.from(STORAGE_BUCKET).download(path)
-  if (error) throw error
+  if (error) { console.error('下载失败', path, error); throw error }
   return await data.arrayBuffer()
 }
 
@@ -541,7 +541,7 @@ async function processFiles(files) {
       let relPath = file.webkitRelativePath || file._relativePath || ''
       const parts = relPath.split('/')
       if (isRootDir && parts.length >= 3) relPath = parts.slice(1).join('/')
-      const storagePath = uploadId + '/' + relPath
+      const storagePath = uploadId + '/' + encodeURIComponent(relPath).replace(/%2F/g, '/')
       try {
         await uploadFileToStorage(file, storagePath)
         // 标记到结构
