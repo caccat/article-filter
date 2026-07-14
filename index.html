@@ -1206,9 +1206,9 @@ function renderHistory() {
                 try {
                   const buf = await downloadFromStorage(path)
                   let text
-                  try { text = new TextDecoder('utf-8', { fatal: false }).decode(buf).substring(0, 2000) }
-                  catch { text = '(二进制文件,大小 ' + buf.byteLength + ' 字节)' }
-                  area.innerHTML = '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">📄 ' + name + ' (前 2000 字)</div><pre style="margin:0;white-space:pre-wrap;font-size:12px;line-height:1.6">' + text.replace(/</g, '&lt;') + '</pre>'
+            try { text = new TextDecoder('utf-8', { fatal: false }).decode(buf) }
+            catch { text = '(二进制文件,大小 ' + buf.byteLength + ' 字节)' }
+            area.innerHTML = '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">📄 ' + name + '</div><pre style="margin:0;white-space:pre-wrap;font-size:12px;line-height:1.6">' + text.replace(/</g, '&lt;') + '</pre>'
                   area.dataset.curPath = path
                 } catch(e) { area.innerHTML = '<span style="color:var(--danger)">加载失败: ' + e.message + '</span>' }
               }
