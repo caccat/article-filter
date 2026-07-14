@@ -1190,33 +1190,36 @@ function renderHistory() {
           '<div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0">' +
           '<button class="btn btn-sm btn-outline" onclick="changeUploadType(\'' + type + '\',\'' + fmt + '\')">✏️ 修改类型</button>' +
           '<button class="btn btn-sm btn-danger" onclick="deleteUploadRecord(\'' + type + '\',\'' + fmt + '\')">🗑 删除</button></div></div></div>'
+        // 绑定点击事件查看内容
+        ;(function(type, fmt) {
+          setTimeout(() => {
+            const list = document.getElementById('fileList-' + type + '-' + fmt)
+            if (!list) return
+            list.querySelectorAll('[data-path]').forEach(el => {
+              el.onclick = async () => {
+                const path = el.dataset.path
+                const name = el.dataset.name
+                const area = document.getElementById('previewArea-' + type + '-' + fmt)
+                if (!path) { area.innerHTML = '<span style="color:var(--danger)">无文件路径（文件未上传到云）</span>'; area.style.display = 'block'; return }
+                if (area.style.display === 'block' && area.dataset.curPath === path) { area.style.display = 'none'; area.dataset.curPath = ''; return }
+                area.innerHTML = '<span style="color:var(--text-muted)">加载中...</span>'; area.style.display = 'block'
+                try {
+                  const buf = await downloadFromStorage(path)
+                  let text
+                  try { text = new TextDecoder('utf-8', { fatal: false }).decode(buf).substring(0, 2000) }
+                  catch { text = '(二进制文件,大小 ' + buf.byteLength + ' 字节)' }
+                  area.innerHTML = '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">📄 ' + name + ' (前 2000 字)</div><pre style="margin:0;white-space:pre-wrap;font-size:12px;line-height:1.6">' + text.replace(/</g, '&lt;') + '</pre>'
+                  area.dataset.curPath = path
+                } catch(e) { area.innerHTML = '<span style="color:var(--danger)">加载失败: ' + e.message + '</span>' }
+              }
+            })
+          }, 100)
+        })(type, fmt)
+      }
+    } else if (usedSet.size > 0) {
+      html += '<div class="card"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="card-title">🏷️ ' + type + '</div><div class="card-sub">已导出 <strong>' + usedSet.size + '</strong> 篇（原始文件已移除）</div></div>' +
+        '<button class="btn btn-sm btn-danger" onclick="deleteUploadRecord(\'' + type + '\',\'all\')">🗑 清空</button></div></div>'
     }
-    // 绑定点击事件查看内容
-    setTimeout(() => {
-      const list = document.getElementById('fileList-' + type + '-' + fmt)
-      if (!list) return
-      list.querySelectorAll('[data-path]').forEach(el => {
-        el.onclick = async () => {
-          const path = el.dataset.path
-          const name = el.dataset.name
-          const area = document.getElementById('previewArea-' + type + '-' + fmt)
-          if (!path) { area.innerHTML = '<span style="color:var(--danger)">无文件路径（文件未上传到云）</span>'; area.style.display = 'block'; return }
-          if (area.style.display === 'block' && area.dataset.curPath === path) { area.style.display = 'none'; area.dataset.curPath = ''; return }
-          area.innerHTML = '<span style="color:var(--text-muted)">加载中...</span>'; area.style.display = 'block'
-          try {
-            const buf = await downloadFromStorage(path)
-            let text
-            try { text = new TextDecoder('utf-8', { fatal: false }).decode(buf).substring(0, 2000) }
-            catch { text = '(二进制文件,大小 ' + buf.byteLength + ' 字节)' }
-            area.innerHTML = '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">📄 ' + name + ' (前 2000 字)</div><pre style="margin:0;white-space:pre-wrap;font-size:12px;line-height:1.6">' + text.replace(/</g, '&lt;') + '</pre>'
-            area.dataset.curPath = path
-          } catch(e) { area.innerHTML = '<span style="color:var(--danger)">加载失败: ' + e.message + '</span>' }
-        }
-      })
-    }, 100)
-  } else if (usedSet.size > 0) {
-    html += '<div class="card"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="card-title">🏷️ ' + type + '</div><div class="card-sub">已导出 <strong>' + usedSet.size + '</strong> 篇（原始文件已移除）</div></div>' +
-      '<button class="btn btn-sm btn-danger" onclick="deleteUploadRecord(\'' + type + '\',\'all\')">🗑 清空</button></div></div>'
   }
   c.innerHTML = html || '<div class="empty-state"><span class="icon">📁</span><p>暂无上传记录</p></div>'
 }
