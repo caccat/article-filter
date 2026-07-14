@@ -387,9 +387,8 @@ async function loadKeywordTemplatesFromCloud() {
 }
 async function saveKeywordTemplatesToCloud() {
   try {
-    const toSave = state.keywordTemplates.filter(t => t.id !== 'default')
     await supabaseClient.from('keyword_templates').delete().neq('id', '_')
-    for (const t of toSave) {
+    for (const t of state.keywordTemplates) {
       await supabaseClient.from('keyword_templates').upsert({
         id: t.id, name: t.name, keywords: t.keywords, greedy_ratio: t.greedyRatio
       })
@@ -1414,9 +1413,9 @@ function renderKeywordTemplatesPage() {
       (isDefault ? '<span style="margin-left:8px;font-size:11px;background:var(--primary-light);color:var(--primary);padding:2px 8px;border-radius:4px">默认</span>' : '') +
       '<span style="margin-left:8px;font-size:12px;color:var(--text-muted)">' + tpl.keywords.length + ' 个关键词 · 贪心 ' + tpl.greedyRatio + '%</span></div>' +
       '<div style="display:flex;gap:6px">' +
-      (isDefault ? '<button class="btn btn-sm btn-outline" onclick="cloneKeywordTemplate(\'' + tpl.id + '\')">📋 复制</button>' : 
-        '<button class="btn btn-sm btn-outline" onclick="editKeywordTemplate(\'' + tpl.id + '\')">✏️ 编辑</button>' +
-        '<button class="btn btn-sm btn-danger" onclick="deleteKeywordTemplate(\'' + tpl.id + '\')">🗑 删除</button>') +
+      '<button class="btn btn-sm btn-outline" onclick="editKeywordTemplate(\'' + tpl.id + '\')">✏️ 编辑</button>' +
+      '<button class="btn btn-sm btn-outline" onclick="cloneKeywordTemplate(\'' + tpl.id + '\')">📋 复制</button>' +
+      (isDefault ? '' : '<button class="btn btn-sm btn-danger" onclick="deleteKeywordTemplate(\'' + tpl.id + '\')">🗑 删除</button>') +
       '</div></div>' +
       '<div style="display:flex;flex-wrap:wrap;gap:4px">' +
       tpl.keywords.map(k => '<span style="font-size:11px;padding:3px 8px;background:#fff;border-radius:12px;border:1px solid var(--border)">' + k.word + ' <span style="color:var(--primary);font-weight:600">' + k.pct + '%</span></span>').join('') +
