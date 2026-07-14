@@ -228,7 +228,7 @@ async function loadAllFromCloud() {
   try {
     const [typesRes, articlesRes, templatesRes, usedRes, filtersRes] = await Promise.all([
       supabaseClient.from('types').select('name'),
-      supabaseClient.from('articles').select('type, format, title, city, keywords, storage_path'),
+      supabaseClient.from('articles').select('type, format, title, city, keywords, storage_path, original_file'),
       supabaseClient.from('templates').select('*'),
       supabaseClient.from('used_articles').select('type, title'),
       supabaseClient.from('filter_configs').select('*')
@@ -332,7 +332,7 @@ async function saveArticlesToCloud(type, data) {
     for (const fmt of FORMAT_KEYS) {
       for (const f of (data.folderStructure[fmt] || [])) {
         if (f.storage_path) {
-          rows.push({ type, format: fmt, title: f.name, city: f.city, keywords: f.keywords, storage_path: f.storage_path })
+          rows.push({ type, format: fmt, title: f.name, city: f.city, keywords: f.keywords, storage_path: f.storage_path, original_file: f.original_file })
         }
       }
     }
@@ -529,7 +529,7 @@ async function processFiles(files) {
       const matchedFmt = FORMAT_KEYS.find(k => fmtDir.includes(k))
       if (matchedFmt) fmtDir = matchedFmt
       if (!structure[fmtDir]) structure[fmtDir] = []
-      structure[fmtDir].push({ name: articleName, fullName: fileName, relativePath: relPath, subfolder: pc.length > 2 ? pc[1] : null, file, city: detectCity(articleName), keywords: detectKeywords(articleName), storage_path: '' })
+      structure[fmtDir].push({ name: articleName, fullName: fileName, relativePath: relPath, subfolder: pc.length > 2 ? pc[1] : null, file, city: detectCity(articleName), keywords: detectKeywords(articleName), storage_path: '', original_file: fileName })
       nameSet.add(articleName)
       fileCounts[fmtDir] = (fileCounts[fmtDir] || 0) + 1
     }
@@ -541,7 +541,9 @@ async function processFiles(files) {
       let relPath = file.webkitRelativePath || file._relativePath || ''
       const parts = relPath.split('/')
       if (isRootDir && parts.length >= 3) relPath = parts.slice(1).join('/')
-      const storagePath = uploadId + '/' + encodeURIComponent(relPath).replace(/%2F/g, '/')
+      // Supabase Storage 不允许中文/特殊字符 key，用 hash 代替
+      const ext = relPath.includes('.') ? relPath.split('.').pop() : ''
+      const storagePath = uploadId + '/' + articleName.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 60) + '.' + ext
       try {
         await uploadFileToStorage(file, storagePath)
         // 标记到结构
@@ -1037,8 +1039,8 @@ async function exportFormat(format) {
           } else {
             log(format, '  ⚠ ' + m.fullName + ': 文件不可用（请重新上传）\n','warn'); continue
           }
-          zip.file(m.fullName, fileContent)
-          log(format, '  ✓ ' + m.fullName + '\n','success')
+          zip.file(m.original_file || m.fullName, fileContent)
+          log(format, '  ✓ ' + (m.original_file || m.fullName) + '\n','success')
           processed++
           updateProgress(format, processed, toExport.length, m.fullName)
           if (processed % 15 === 0) await sleep(0)
