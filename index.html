@@ -138,6 +138,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
       <div class="nav-item" data-page="ptxt" onclick="switchPage('ptxt')"><span>📃 搜狐 (ptxt)</span><span class="nav-badge" id="badge-ptxt">0</span></div>
       <div class="nav-item" data-page="txt" onclick="switchPage('txt')"><span>📝 网易/抖音 (txt)</span><span class="nav-badge" id="badge-txt">0</span></div>
       <div style="height:1px;background:var(--border);margin:8px 0"></div>
+      <div class="nav-item" data-page="keywordTemplates" onclick="switchPage('keywordTemplates')"><span>🏷️ 标题模板</span><span class="nav-badge"></span></div>
       <div class="nav-item" data-page="history" onclick="switchPage('history')"><span>📝 上传记录</span><span class="nav-badge"></span></div>
       <div class="nav-item" data-page="overview" onclick="switchPage('overview')"><span>📊 总览</span><span class="nav-badge"></span></div>
     </div>
@@ -169,6 +170,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
     <div class="page" id="page-manage">
       <div class="page-header"><div class="page-title">⚙️ 管理</div><div class="page-desc">管理类型、模板、已用文章</div></div>
       <div id="manageContent"><div class="empty-state"><span class="icon">📁</span><p>请先上传文件夹</p></div></div>
+    </div>
+    <div class="page" id="page-keywordTemplates">
+      <div class="page-header"><div class="page-title">🏷️ 标题关键词模板</div><div class="page-desc">管理标题筛选用的关键词模板，自定义高频词和占比</div></div>
+      <div id="keywordTemplatesContent"></div>
     </div>
     <div class="page" id="page-history">
       <div class="page-header"><div class="page-title">📝 上传记录</div><div class="page-desc">查看和管理每次上传的记录</div></div>
@@ -238,6 +243,7 @@ async function loadAllFromCloud() {
       supabaseClient.from('used_articles').select('type, title'),
       supabaseClient.from('filter_configs').select('*')
     ])
+    await loadKeywordTemplatesFromCloud()
     // 加载类型
     if (typesRes.data && typesRes.data.length > 0) {
       state.types = typesRes.data.map(t => t.name)
@@ -265,6 +271,7 @@ async function loadAllFromCloud() {
           state.filters[f.format].cities = f.cities || []
           state.filters[f.format].templateCounts = f.template_counts || {}
           state.filters[f.format].titleFilterOn = f.title_filter_on || false
+          state.filters[f.format].keywordTemplateId = f.keyword_template_id || null
         }
       })
     }
@@ -325,7 +332,8 @@ async function saveFiltersToCloud() {
       await supabaseClient.from('filter_configs').upsert({
         format: fmt, type: f.activeType || state.activeType,
         filter_mode: f.filterMode, cities: f.cities, template_counts: f.templateCounts || {},
-        title_filter_on: f.titleFilterOn || false
+        title_filter_on: f.titleFilterOn || false,
+        keyword_template_id: f.keywordTemplateId || null
       })
     }
   } catch(e) {}
@@ -351,7 +359,94 @@ async function saveArticlesToCloud(type, data) {
 }
 
 async function syncToCloud() {
-  await Promise.all([saveTypesToCloud(), saveTemplatesToCloud(), saveUsedToCloud(), saveFiltersToCloud()])
+  await Promise.all([saveTypesToCloud(), saveTemplatesToCloud(), saveUsedToCloud(), saveFiltersToCloud(), saveKeywordTemplatesToCloud()])
+}
+
+// ==================== 关键词模板管理 ====================
+async function loadKeywordTemplatesFromCloud() {
+  try {
+    const { data } = await supabaseClient.from('keyword_templates').select('*').order('created_at')
+    if (data && data.length > 0) {
+      state.keywordTemplates = data.map(d => ({
+        id: d.id,
+        name: d.name,
+        keywords: d.keywords || [],
+        greedyRatio: d.greedy_ratio != null ? d.greedy_ratio : 85
+      }))
+    }
+    // 确保有默认模板
+    if (!state.keywordTemplates.find(t => t.id === 'default')) {
+      state.keywordTemplates.unshift({
+        id: 'default',
+        name: '默认模板',
+        keywords: KEYWORDS.map(k => ({ word: k.word, pct: k.pct })),
+        greedyRatio: 85
+      })
+    }
+  } catch(e) { console.error('加载关键词模板失败', e) }
+}
+async function saveKeywordTemplatesToCloud() {
+  try {
+    const toSave = state.keywordTemplates.filter(t => t.id !== 'default')
+    await supabaseClient.from('keyword_templates').delete().neq('id', '_')
+    for (const t of toSave) {
+      await supabaseClient.from('keyword_templates').upsert({
+        id: t.id, name: t.name, keywords: t.keywords, greedy_ratio: t.greedyRatio
+      })
+    }
+  } catch(e) {}
+}
+function getKeywordTemplate(id) {
+  const tpl = state.keywordTemplates.find(t => t.id === id)
+  return tpl || state.keywordTemplates.find(t => t.id === 'default') || state.keywordTemplates[0]
+}
+function getActiveKeywords(format) {
+  const tplId = state.filters[format].keywordTemplateId
+  const tpl = getKeywordTemplate(tplId)
+  return tpl ? tpl.keywords : KEYWORDS.map(k => ({ word: k.word, pct: k.pct }))
+}
+function getActiveGreedyRatio(format) {
+  const tplId = state.filters[format].keywordTemplateId
+  const tpl = getKeywordTemplate(tplId)
+  return tpl ? tpl.greedyRatio : 85
+}
+async function saveKeywordTemplate(name, keywords, greedyRatio) {
+  if (!name || !name.trim()) { showToast('请输入模板名称', 'error'); return }
+  const id = 'kt_' + Date.now()
+  state.keywordTemplates.push({ id, name: name.trim(), keywords, greedyRatio })
+  await saveKeywordTemplatesToCloud()
+  renderKeywordTemplatesPage()
+  showToast('模板「' + name + '」已保存 ✅', 'success')
+}
+async function updateKeywordTemplate(id, name, keywords, greedyRatio) {
+  const tpl = state.keywordTemplates.find(t => t.id === id)
+  if (!tpl) return
+  tpl.name = name || tpl.name
+  tpl.keywords = keywords || tpl.keywords
+  tpl.greedyRatio = greedyRatio != null ? greedyRatio : tpl.greedyRatio
+  await saveKeywordTemplatesToCloud()
+  renderKeywordTemplatesPage()
+  showToast('模板已更新 ✅', 'success')
+}
+async function deleteKeywordTemplate(id) {
+  if (!confirm('确认删除该关键词模板？')) return
+  state.keywordTemplates = state.keywordTemplates.filter(t => t.id !== id)
+  await saveKeywordTemplatesToCloud()
+  // 清除引用了该模板的筛选器
+  FORMAT_KEYS.forEach(f => {
+    if (state.filters[f].keywordTemplateId === id) state.filters[f].keywordTemplateId = null
+  })
+  renderKeywordTemplatesPage()
+  showToast('模板已删除', 'info')
+}
+function selectKeywordTemplate(format, tplId) {
+  state.filters[format].keywordTemplateId = tplId || null
+  updateFilterPage(format)
+  saveFiltersToCloud()
+}
+function getActiveKeywordTemplateName(format) {
+  const tpl = getKeywordTemplate(state.filters[format].keywordTemplateId)
+  return tpl ? tpl.name : '默认模板'
 }
 
 // ==================== 全局常量 ====================
@@ -367,10 +462,11 @@ const state = {
   types: ['提示词一'], usedArticlesByType: { '提示词一': new Set() },
   filters: {}, typeData: {}, uploaded: false, activeType: '提示词一', templates: {},
   tagMatrixByType: {}, cityArticleCountByType: {},
+  keywordTemplates: [], // 标题关键词模板
   _heatmapFormat: 'docx', _heatmapType: '全部', _manageTab: 'types'
 }
 FORMAT_KEYS.forEach(f => {
-  state.filters[f] = { activeType: '提示词一', filterMode: 'free', cities: [], templateCounts: {}, titleFilterOn: false, preview: null }
+  state.filters[f] = { activeType: '提示词一', filterMode: 'free', cities: [], templateCounts: {}, titleFilterOn: false, preview: null, keywordTemplateId: null }
   state.templates[f] = []
 })
 
@@ -733,12 +829,16 @@ function generateFilterPages() {
       '<div style="position:relative;width:44px;height:24px;background:' + (filter.titleFilterOn ? 'var(--primary)' : 'var(--border)') + ';border-radius:12px;cursor:pointer" id="toggleTitle-' + fmt + '" onclick="toggleTitleFilter(\'' + fmt + '\')">' +
       '<div style="position:absolute;top:2px;left:' + (filter.titleFilterOn ? '22px' : '2px') + ';width:20px;height:20px;background:#fff;border-radius:50%"></div></div></label></div>' +
       '<div id="titleFilterSection-' + fmt + '" class="' + (filter.titleFilterOn ? '' : 'hidden') + '">' +
-      '<div class="card-sub">按关键词占比进行"85%贪心+15%随机"混合筛选</div>' +
-      '<div style="background:#f8fafc;border-radius:10px;padding:14px;border:1px solid var(--border);margin-bottom:12px">' +
-      '<div style="font-size:13px;font-weight:600;margin-bottom:8px">📊 24个关键词占比表</div>' +
-      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px">' +
-      KEYWORDS.map(k => '<div style="font-size:12px;padding:4px 8px;background:#fff;border-radius:6px;border:1px solid var(--border)"><span style="font-weight:600">' + k.word + '</span><span style="color:var(--text-muted)"> ' + k.pct + '%</span></div>').join('') +
-      '</div></div></div></div>' +
+      '<div class="card-sub">选择关键词模板，按占比进行贪心+随机混合筛选</div>' +
+      '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">' +
+      '<span style="font-size:13px;font-weight:600">📋 模板：</span>' +
+      '<select id="keywordTplSelect-' + fmt + '" onchange="selectKeywordTemplate(\'' + fmt + '\',this.value)" style="flex:1;min-width:180px;padding:8px 12px;border:2px solid var(--border);border-radius:8px;font-size:13px;outline:none">' +
+      state.keywordTemplates.map(t => '<option value="' + t.id + '" ' + ((filter.keywordTemplateId || 'default') === t.id ? 'selected' : '') + '>' + t.name + '</option>').join('') +
+      '</select>' +
+      '<a href="#" onclick="event.preventDefault();switchPage(\'keywordTemplates\')" style="font-size:12px;color:var(--primary)">管理模板 →</a></div>' +
+      '<div id="keywordPreview-' + fmt + '" style="background:#f8fafc;border-radius:10px;padding:14px;border:1px solid var(--border);margin-bottom:12px">' +
+      '<div style="font-size:13px;font-weight:600;margin-bottom:8px">📊 关键词占比表</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px" id="keywordGrid-' + fmt + '"></div></div></div></div>' +
       '<div class="card"><div class="card-title">📋 预览 & 导出</div>' +
       '<div id="preview-' + fmt + '"><div class="empty-state"><span class="icon">🔍</span><p>设置城市和数量后生成预览</p></div></div>' +
       '<div class="stats hidden" id="stats-' + fmt + '"></div>' +
@@ -764,6 +864,7 @@ function switchPage(pageId) {
   if (pageId === 'overview') renderOverview()
   if (pageId === 'heatmap') { if (state.uploaded) renderHeatmap() }
   if (pageId === 'manage') renderManage()
+  if (pageId === 'keywordTemplates') renderKeywordTemplatesPage()
   if (FORMAT_KEYS.includes(pageId)) updateFilterPage(pageId)
 }
 
@@ -831,7 +932,20 @@ function updateFilterPage(format) {
   const available = files.filter(f => !usedSet.has(f.name)).length
   availEl.textContent = available
   usedEl.textContent = files.length - available
+  // 刷新关键词模板选择器和预览
+  const tplSelect = document.getElementById('keywordTplSelect-' + format)
+  if (tplSelect) {
+    const curId = state.filters[format].keywordTemplateId || 'default'
+    tplSelect.innerHTML = state.keywordTemplates.map(t => '<option value="' + t.id + '" ' + (curId === t.id ? 'selected' : '') + '>' + t.name + '</option>').join('')
+  }
+  renderKeywordGrid(format)
   updateNavBadges()
+}
+function renderKeywordGrid(format) {
+  const grid = document.getElementById('keywordGrid-' + format); if (!grid) return
+  const kws = getActiveKeywords(format); const ratio = getActiveGreedyRatio(format)
+  grid.innerHTML = kws.map(k => '<div style="font-size:12px;padding:4px 8px;background:#fff;border-radius:6px;border:1px solid var(--border)"><span style="font-weight:600">' + k.word + '</span><span style="color:var(--text-muted)"> ' + k.pct + '%</span></div>').join('') +
+    '<div style="font-size:11px;color:var(--text-muted);padding:4px 8px;grid-column:1/-1">贪心比例: ' + ratio + '%</div>'
 }
 
 // ==================== 更新导航角标 ====================
@@ -856,28 +970,29 @@ function detectCity(title) {
   for (const [alias, city] of Object.entries(CITY_ALIASES)) { if (title.includes(alias)) return city }
   return null
 }
-function detectKeywords(title) { const found = []; for (const kw of KEYWORDS) { if (title.includes(kw.word)) found.push(kw.word) } return found }
-function countKeywords(titles) { const counts = {}; KEYWORDS.forEach(k => counts[k.word] = 0); for (const t of titles) { const kws = detectKeywords(t); for (const kw of kws) counts[kw]++ } return counts }
+function detectKeywords(title, keywords) { const kws = keywords || KEYWORDS; const found = []; for (const kw of kws) { if (title.includes(kw.word)) found.push(kw.word) } return found }
+function countKeywords(titles, keywords) { const kws = keywords || KEYWORDS; const counts = {}; kws.forEach(k => counts[k.word] = 0); for (const t of titles) { const found = detectKeywords(t, kws); for (const kw of found) counts[kw]++ } return counts }
 
 // ==================== 贪心算法 ====================
-function greedyKeywordSelect(allTitles, targetCount, targetCountsMap) {
+function greedyKeywordSelect(allTitles, targetCount, targetCountsMap, keywords) {
+  const kws = keywords || KEYWORDS
   if (targetCount <= 0 || allTitles.length === 0) return []
   if (targetCount >= allTitles.length) return [...allTitles]
   const selected = [], remaining = [...allTitles]; const currentCounts = {}
-  KEYWORDS.forEach(k => currentCounts[k.word] = 0)
+  kws.forEach(k => currentCounts[k.word] = 0)
   for (let round = 0; round < targetCount; round++) {
     let bestTitle = null, bestIdx = -1, bestImprovement = -Infinity
     for (let i = 0; i < remaining.length; i++) {
-      const title = remaining[i]; const kws = detectKeywords(title)
+      const title = remaining[i]; const detected = detectKeywords(title, kws)
       let curDev = 0, newDev = 0
-      for (const kw of KEYWORDS) {
-        const target = targetCountsMap[kw.word] || 0, cur = currentCounts[kw.word], add = kws.includes(kw.word) ? 1 : 0
+      for (const kw of kws) {
+        const target = targetCountsMap[kw.word] || 0, cur = currentCounts[kw.word], add = detected.includes(kw.word) ? 1 : 0
         curDev += Math.abs(cur - target); newDev += Math.abs(cur + add - target)
       }
       const imp = curDev - newDev
       if (imp > bestImprovement) { bestImprovement = imp; bestTitle = title; bestIdx = i }
     }
-    if (bestTitle && bestIdx >= 0) { selected.push(bestTitle); for (const kw of detectKeywords(bestTitle)) currentCounts[kw]++; remaining.splice(bestIdx, 1) } else break
+    if (bestTitle && bestIdx >= 0) { selected.push(bestTitle); for (const kw of detectKeywords(bestTitle, kws)) currentCounts[kw]++; remaining.splice(bestIdx, 1) } else break
   }
   return selected
 }
@@ -888,12 +1003,13 @@ function buildCityArticleMap(allTitles, validCities, nameToCity) {
 }
 function cityKeywordFilter(format, validCities, allAvailableNames, cityArticleMap, useKeywordFilter) {
   const allSelected = [], allSelectedSet = new Set(), warnings = []
+  const kws = getActiveKeywords(format); const ratio = getActiveGreedyRatio(format)
   for (const city of validCities) {
     const cityPool = (cityArticleMap[city.name] || []).filter(t => !allSelectedSet.has(t)); const needCount = city.count; let selected
     if (cityPool.length >= needCount) {
-      selected = useKeywordFilter ? hybridKeywordFilter(cityPool, needCount) : shuffleAndPick(cityPool, needCount)
+      selected = useKeywordFilter ? hybridKeywordFilter(cityPool, needCount, kws, ratio) : shuffleAndPick(cityPool, needCount)
     } else {
-      selected = useKeywordFilter ? hybridKeywordFilter(cityPool, cityPool.length) : shuffleAndPick(cityPool, cityPool.length)
+      selected = useKeywordFilter ? hybridKeywordFilter(cityPool, cityPool.length, kws, ratio) : shuffleAndPick(cityPool, cityPool.length)
       const shortage = needCount - cityPool.length
       const borrowPool = allAvailableNames.filter(t => !allSelectedSet.has(t))
       shuffleArray(borrowPool); const borrowed = borrowPool.slice(0, shortage); selected.push(...borrowed)
@@ -910,12 +1026,13 @@ function cityKeywordFilter(format, validCities, allAvailableNames, cityArticleMa
   return { allSelected, warnings }
 }
 function shuffleAndPick(pool, count) { if (count <= 0 || !pool.length) return []; const arr = [...pool]; shuffleArray(arr); return arr.slice(0, Math.min(count, arr.length)) }
-function hybridKeywordFilter(titlePool, totalNeeded) {
+function hybridKeywordFilter(titlePool, totalNeeded, keywords, greedyRatio) {
+  const kws = keywords || KEYWORDS; const ratio = greedyRatio != null ? greedyRatio : 85
   if (titlePool.length === 0 || totalNeeded <= 0) return []
   if (totalNeeded >= titlePool.length) return [...titlePool]
-  const greedyCount = Math.round(totalNeeded * 0.85); const targetCounts = {}
-  for (const kw of KEYWORDS) targetCounts[kw.word] = Math.round(greedyCount * kw.pct / 100)
-  const greedySelected = greedyKeywordSelect(titlePool, greedyCount, targetCounts); const selectedSet = new Set(greedySelected); const randomPick = []
+  const greedyCount = Math.round(totalNeeded * ratio / 100); const targetCounts = {}
+  for (const kw of kws) targetCounts[kw.word] = Math.round(greedyCount * kw.pct / 100)
+  const greedySelected = greedyKeywordSelect(titlePool, greedyCount, targetCounts, kws); const selectedSet = new Set(greedySelected); const randomPick = []
   const pool = [...titlePool]; shuffleArray(pool)
   for (const t of pool) { if (randomPick.length >= totalNeeded - greedyCount) break; if (!selectedSet.has(t)) { randomPick.push(t); selectedSet.add(t) } }
   return [...greedySelected, ...randomPick]
@@ -1001,16 +1118,17 @@ function renderWarnings(format, warnings) {
 function renderKeywordStats(format, finalTitles, totalNeeded) {
   const container = document.getElementById('keywordStats-' + format); if (!container) return
   container.classList.remove('hidden')
-  const actual = countKeywords(finalTitles); const greedyCount = Math.round(totalNeeded * 0.85); const targets = {}
-  for (const kw of KEYWORDS) targets[kw.word] = Math.round(greedyCount * kw.pct / 100)
+  const kws = getActiveKeywords(format); const ratio = getActiveGreedyRatio(format)
+  const actual = countKeywords(finalTitles, kws); const greedyCount = Math.round(totalNeeded * ratio / 100); const targets = {}
+  for (const kw of kws) targets[kw.word] = Math.round(greedyCount * kw.pct / 100)
   let totalDev = 0, maxOver = '', maxUnder = '', maxOverVal = -Infinity, maxUnderVal = Infinity, rows = ''
-  for (const kw of KEYWORDS) { const a = actual[kw.word] || 0, t = targets[kw.word] || 0, d = a - t; totalDev += Math.abs(d); if (d > maxOverVal) { maxOverVal = d; maxOver = kw.word }; if (d < maxUnderVal) { maxUnderVal = d; maxUnder = kw.word }; rows += '<tr><td style="font-weight:600">' + kw.word + '</td><td style="text-align:center">' + a + '</td><td style="text-align:center">' + t + '</td><td style="text-align:center">' + (d > 0 ? '+' : '') + d + '</td></tr>' }
-  const avg = totalDev / KEYWORDS.length; let ev = avg < 0.5 ? '✅ 整体偏差非常小' : avg < 1 ? '👍 整体偏差较小' : avg < 2 ? '⚠️ 整体偏差中等' : '🔴 整体偏差较大'
+  for (const kw of kws) { const a = actual[kw.word] || 0, t = targets[kw.word] || 0, d = a - t; totalDev += Math.abs(d); if (d > maxOverVal) { maxOverVal = d; maxOver = kw.word }; if (d < maxUnderVal) { maxUnderVal = d; maxUnder = kw.word }; rows += '<tr><td style="font-weight:600">' + kw.word + '</td><td style="text-align:center">' + a + '</td><td style="text-align:center">' + t + '</td><td style="text-align:center">' + (d > 0 ? '+' : '') + d + '</td></tr>' }
+  const avg = kws.length ? totalDev / kws.length : 0; let ev = avg < 0.5 ? '✅ 整体偏差非常小' : avg < 1 ? '👍 整体偏差较小' : avg < 2 ? '⚠️ 整体偏差中等' : '🔴 整体偏差较大'
   if (maxOver) ev += '<br>偏多最多的词：<strong>' + maxOver + '</strong>（+' + maxOverVal + '）'
   if (maxUnder) ev += '<br>偏少最多的词：<strong>' + maxUnder + '</strong>（' + maxUnderVal + '）'
-  const warns = []; for (const kw of KEYWORDS) { const a = actual[kw.word] || 0, t = targets[kw.word] || 0; if (a < t * 0.5) warns.push(kw.word + '（实际' + a + '，目标' + t + '）') }
-  container.innerHTML = '<div class="card" style="margin-top:0;padding:16px;background:linear-gradient(135deg,#f8fafc,#f1f5f9)"><div class="card-title" style="font-size:15px">📊 关键词统计对比表</div>' +
-    '<div style="font-size:13px;margin-bottom:12px;color:var(--text-muted)">总文章数: <strong>' + finalTitles.length + '</strong> 篇 · 贪心: <strong>' + greedyCount + '</strong> 篇 · 随机: <strong>' + (totalNeeded - greedyCount) + '</strong> 篇</div>' +
+  const warns = []; for (const kw of kws) { const a = actual[kw.word] || 0, t = targets[kw.word] || 0; if (a < t * 0.5) warns.push(kw.word + '（实际' + a + '，目标' + t + '）') }
+  container.innerHTML = '<div class="card" style="margin-top:0;padding:16px;background:linear-gradient(135deg,#f8fafc,#f1f5f9)"><div class="card-title" style="font-size:15px">📊 关键词统计对比表（' + getActiveKeywordTemplateName(format) + '）</div>' +
+    '<div style="font-size:13px;margin-bottom:12px;color:var(--text-muted)">总文章数: <strong>' + finalTitles.length + '</strong> 篇 · 贪心: <strong>' + greedyCount + '</strong> 篇 (' + ratio + '%) · 随机: <strong>' + (totalNeeded - greedyCount) + '</strong> 篇</div>' +
     '<div class="table-wrap" style="max-height:400px;overflow-y:auto"><table class="preview-table"><thead><tr><th>关键词</th><th style="text-align:center">实际</th><th style="text-align:center">目标</th><th style="text-align:center">偏差</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
     '<div style="margin-top:12px;padding:12px;background:#fff;border-radius:8px;border:1px solid var(--border);font-size:13px"><div style="font-weight:600;margin-bottom:4px">📝 评价</div>' + ev +
     (warns.length ? '<div style="margin-top:8px;color:var(--danger)">⚠️ 以下关键词库存严重不足：' + warns.join('；') + '</div>' : '') + '</div></div>'
@@ -1280,6 +1398,168 @@ async function deleteUploadRecord(type, fmt) {
   buildTagMatrix(); renderHistory(); updateNavBadges(); renderOverview()
   FORMAT_KEYS.forEach(f => updateFilterPage(f))
   showToast('已删除 ✅','success')
+}
+
+// ==================== 关键词模板页面 ====================
+function renderKeywordTemplatesPage() {
+  const c = document.getElementById('keywordTemplatesContent')
+  let html = '<div class="card"><div class="card-title">📋 关键词模板列表</div>' +
+    '<div class="card-sub">管理标题筛选用的关键词模板，自定义高频词和占比比例</div>'
+  
+  state.keywordTemplates.forEach(tpl => {
+    const isDefault = tpl.id === 'default'
+    html += '<div style="background:#f8fafc;border-radius:10px;padding:16px;border:1px solid var(--border);margin-bottom:12px">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px">' +
+      '<div><span style="font-weight:700;font-size:15px">📋 ' + tpl.name + '</span>' +
+      (isDefault ? '<span style="margin-left:8px;font-size:11px;background:var(--primary-light);color:var(--primary);padding:2px 8px;border-radius:4px">默认</span>' : '') +
+      '<span style="margin-left:8px;font-size:12px;color:var(--text-muted)">' + tpl.keywords.length + ' 个关键词 · 贪心 ' + tpl.greedyRatio + '%</span></div>' +
+      '<div style="display:flex;gap:6px">' +
+      (isDefault ? '<button class="btn btn-sm btn-outline" onclick="cloneKeywordTemplate(\'' + tpl.id + '\')">📋 复制</button>' : 
+        '<button class="btn btn-sm btn-outline" onclick="editKeywordTemplate(\'' + tpl.id + '\')">✏️ 编辑</button>' +
+        '<button class="btn btn-sm btn-danger" onclick="deleteKeywordTemplate(\'' + tpl.id + '\')">🗑 删除</button>') +
+      '</div></div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:4px">' +
+      tpl.keywords.map(k => '<span style="font-size:11px;padding:3px 8px;background:#fff;border-radius:12px;border:1px solid var(--border)">' + k.word + ' <span style="color:var(--primary);font-weight:600">' + k.pct + '%</span></span>').join('') +
+      '</div></div>'
+  })
+  
+  html += '<div style="margin-top:16px"><button class="btn btn-primary" onclick="showAddKeywordTemplateDialog()">＋ 新建关键词模板</button></div></div>'
+  c.innerHTML = html
+}
+
+function showAddKeywordTemplateDialog() {
+  showKeywordTemplateEditor('new')
+}
+
+function editKeywordTemplate(id) {
+  showKeywordTemplateEditor('edit', id)
+}
+
+function cloneKeywordTemplate(id) {
+  const src = state.keywordTemplates.find(t => t.id === id); if (!src) return
+  showKeywordTemplateEditor('clone', null, src)
+}
+
+function showKeywordTemplateEditor(mode, editId, cloneSrc) {
+  const old = document.getElementById('keywordTplEditorModal'); if (old) old.remove()
+  
+  let title = '新建关键词模板', name = '', keywords = [], greedyRatio = 85
+  if (mode === 'edit' && editId) {
+    const tpl = state.keywordTemplates.find(t => t.id === editId); if (!tpl) return
+    title = '编辑关键词模板'; name = tpl.name; keywords = [...tpl.keywords]; greedyRatio = tpl.greedyRatio
+  } else if (mode === 'clone' && cloneSrc) {
+    title = '复制关键词模板'; name = cloneSrc.name + ' (副本)'; keywords = cloneSrc.keywords.map(k => ({...k})); greedyRatio = cloneSrc.greedyRatio
+  }
+  if (!keywords.length) keywords = KEYWORDS.map(k => ({ word: k.word, pct: k.pct }))
+  
+  const keywordRows = keywords.map((k, i) => 
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+    '<span style="font-size:12px;color:var(--text-muted);min-width:20px">' + (i + 1) + '</span>' +
+    '<input type="text" value="' + k.word + '" data-kw-idx="' + i + '" data-field="word" placeholder="关键词" style="flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">' +
+    '<input type="number" value="' + k.pct + '" data-kw-idx="' + i + '" data-field="pct" placeholder="占比%" step="0.01" min="0" max="100" style="width:80px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">' +
+    '<span style="font-size:12px;color:var(--text-muted)">%</span>' +
+    '<button class="btn-remove-city" onclick="removeKeywordRow(this)" style="flex-shrink:0">×</button></div>'
+  ).join('')
+  
+  const modal = document.createElement('div')
+  modal.className = 'modal show'; modal.id = 'keywordTplEditorModal'
+  modal.innerHTML = '<div class="modal-content" style="max-width:600px;max-height:80vh;overflow-y:auto" onclick="event.stopPropagation()">' +
+    '<div class="modal-title">' + title + '</div>' +
+    '<div class="form-group"><label>模板名称</label><input type="text" id="ktEditorName" value="' + name + '" placeholder="输入模板名称" style="width:100%;padding:9px 12px;border:2px solid var(--border);border-radius:8px;font-size:14px;outline:none"></div>' +
+    '<div class="form-group"><label>贪心比例 (%)</label><input type="number" id="ktEditorRatio" value="' + greedyRatio + '" min="1" max="100" style="width:120px;padding:9px 12px;border:2px solid var(--border);border-radius:8px;font-size:14px;outline:none"></div>' +
+    '<div class="form-group"><label>关键词列表（词 + 占比 %）</label>' +
+    '<div style="max-height:350px;overflow-y:auto;padding-right:4px">' + keywordRows + '</div>' +
+    '<button class="btn btn-sm btn-outline" style="margin-top:8px" onclick="addKeywordRow()">＋ 添加关键词</button></div>' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">' +
+    '<span style="font-size:12px;color:var(--text-muted)" id="ktPctSum">总占比: ' + keywords.reduce((s, k) => s + (k.pct || 0), 0).toFixed(2) + '%</span>' +
+    '<button class="btn btn-sm btn-outline" onclick="autoNormalizePct()">🔄 自动归一化</button></div>' +
+    '<div class="form-actions">' +
+    '<button class="btn btn-outline" onclick="document.getElementById(\'keywordTplEditorModal\').remove()">取消</button>' +
+    '<button class="btn btn-primary" onclick="saveKeywordTemplateFromEditor(\'' + mode + '\',\'' + (editId || '') + '\')">保存</button></div></div>'
+  
+  modal.addEventListener('click', () => modal.remove())
+  document.body.appendChild(modal)
+  
+  setTimeout(() => {
+    modal.querySelectorAll('input[data-field="pct"]').forEach(inp => {
+      inp.addEventListener('input', () => updatePctSum())
+    })
+  }, 50)
+}
+
+function removeKeywordRow(btn) {
+  btn.closest('div').remove()
+  updatePctSum()
+}
+
+function addKeywordRow() {
+  const container = document.getElementById('keywordTplEditorModal').querySelector('.form-group:last-of-type > div')
+  const rows = container.querySelectorAll('[data-kw-idx]')
+  const idx = rows.length
+  const row = document.createElement('div')
+  row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px'
+  row.innerHTML = '<span style="font-size:12px;color:var(--text-muted);min-width:20px">' + (idx + 1) + '</span>' +
+    '<input type="text" data-kw-idx="' + idx + '" data-field="word" placeholder="关键词" style="flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">' +
+    '<input type="number" value="0" data-kw-idx="' + idx + '" data-field="pct" placeholder="占比%" step="0.01" min="0" max="100" style="width:80px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px">' +
+    '<span style="font-size:12px;color:var(--text-muted)">%</span>' +
+    '<button class="btn-remove-city" onclick="removeKeywordRow(this)" style="flex-shrink:0">×</button>'
+  container.appendChild(row)
+  row.querySelector('input[data-field="pct"]').addEventListener('input', () => updatePctSum())
+  updatePctSum()
+}
+
+function updatePctSum() {
+  const sumEl = document.getElementById('ktPctSum'); if (!sumEl) return
+  const modal = document.getElementById('keywordTplEditorModal'); if (!modal) return
+  let sum = 0
+  modal.querySelectorAll('input[data-field="pct"]').forEach(inp => sum += parseFloat(inp.value) || 0)
+  sumEl.textContent = '总占比: ' + sum.toFixed(2) + '%'
+  sumEl.style.color = Math.abs(sum - 100) < 0.01 ? 'var(--success)' : 'var(--danger)'
+}
+
+function autoNormalizePct() {
+  const modal = document.getElementById('keywordTplEditorModal'); if (!modal) return
+  const pctInputs = modal.querySelectorAll('input[data-field="pct"]')
+  let sum = 0
+  pctInputs.forEach(inp => sum += parseFloat(inp.value) || 0)
+  if (sum <= 0) return
+  pctInputs.forEach(inp => inp.value = ((parseFloat(inp.value) || 0) / sum * 100).toFixed(2))
+  updatePctSum()
+}
+
+async function saveKeywordTemplateFromEditor(mode, editId) {
+  const name = document.getElementById('ktEditorName')?.value?.trim()
+  if (!name) { showToast('请输入模板名称', 'error'); return }
+  
+  const ratioInput = document.getElementById('ktEditorRatio')
+  const greedyRatio = parseInt(ratioInput?.value) || 85
+  
+  const modal = document.getElementById('keywordTplEditorModal')
+  const keywords = []
+  const processed = new Set()
+  modal.querySelectorAll('input[data-field="word"]').forEach(el => {
+    const word = el.value.trim()
+    if (!word || processed.has(word)) return
+    processed.add(word)
+    const idx = el.dataset.kwIdx
+    const pctEl = modal.querySelector('input[data-kw-idx="' + idx + '"][data-field="pct"]')
+    const pct = parseFloat(pctEl?.value) || 0
+    keywords.push({ word, pct })
+  })
+  
+  if (!keywords.length) { showToast('请至少添加一个关键词', 'error'); return }
+  
+  const dup = state.keywordTemplates.find(t => t.name === name && t.id !== editId)
+  if (dup) { showToast('模板名称已存在', 'error'); return }
+  
+  if (mode === 'edit' && editId) {
+    await updateKeywordTemplate(editId, name, keywords, greedyRatio)
+  } else {
+    await saveKeywordTemplate(name, keywords, greedyRatio)
+  }
+  
+  document.getElementById('keywordTplEditorModal').remove()
+  FORMAT_KEYS.forEach(f => updateFilterPage(f))
 }
 
 init()
