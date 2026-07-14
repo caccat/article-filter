@@ -174,7 +174,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
           <div id="uploadControlBtns" style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn btn-sm btn-warning" id="btnPauseUpload" onclick="pauseUpload()" style="background:#eab308;color:#fff;border-color:#eab308">⏸ 暂停上传</button>
             <button class="btn btn-sm btn-outline" id="btnResumeUpload" onclick="resumeUpload()" style="display:none">▶ 继续上传</button>
-            <button class="btn btn-sm btn-danger" onclick="cancelUpload()">✕ 取消上传</button>
+            <button class="btn btn-sm btn-danger" onclick="cancelUpload()">🗑 删除本次上传</button>
           </div>
           <div id="uploadPausedNotice" style="display:none;padding:8px 12px;background:#fef3c7;border-radius:8px;border:1px solid #fbbf24;font-size:13px;margin-top:8px">⏸ 上传已暂停，页面刷新不会丢失进度</div>
         </div>
@@ -639,12 +639,11 @@ function updateUploadProgress() {
   document.getElementById('uploadProgressPct').textContent = pct + '%'
   document.getElementById('uploadProgressText').textContent = uploaded + ' / ' + total + ' 个文件'
   
-  // 计算速度和预计时间
-  const elapsed = (Date.now() - uploadState.startTime) / 1000
-  const speed = elapsed > 0 ? Math.round(uploaded / elapsed) : 0
-  const remaining = speed > 0 ? Math.ceil((total - uploaded) / speed) : 0
-  document.getElementById('uploadSpeed').textContent = speed + ' 文件/秒'
-  document.getElementById('uploadETA').textContent = formatETA(remaining)
+  // 按你的算法：剩余未上传文件数 / 200 = 预计剩余分钟数（200 文件/分钟）
+  const remaining = total - uploaded
+  const etaMinutes = Math.ceil(remaining / 200)
+  document.getElementById('uploadSpeed').textContent = '约 200 文件/分钟'
+  document.getElementById('uploadETA').textContent = remaining > 0 ? formatETA(etaMinutes * 60) : '即将完成'
 }
 
 function showUploadPanel() {
@@ -851,7 +850,7 @@ function resumeUpload() {
 
 function cancelUpload() {
   if (!uploadState.running) return
-  if (!confirm('确认取消本次上传？已上传的文件将会丢失。')) return
+  if (!confirm('确认删除本次上传？已上传的文件将会被清理。')) return
   uploadState.cancelled = true
   uploadState.paused = false
   
@@ -861,7 +860,7 @@ function cancelUpload() {
 }
 
 async function finishUploadCancelled() {
-  showToast('上传已取消', 'info')
+  showToast('已删除本次上传', 'info')
   
   // 尝试删除已上传的文件
   if (uploadState.uploadId && uploadState.uploaded > 0) {
