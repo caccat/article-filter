@@ -541,16 +541,18 @@ async function processFiles(files) {
       let relPath = file.webkitRelativePath || file._relativePath || ''
       const parts = relPath.split('/')
       if (isRootDir && parts.length >= 3) relPath = parts.slice(1).join('/')
-      // Supabase Storage 不允许中文/特殊字符 key，用 hash 代替
-      const ext = relPath.includes('.') ? relPath.split('.').pop() : ''
-      const storagePath = uploadId + '/' + articleName.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 60) + '.' + ext
+      // Supabase Storage 不允许中文/特殊字符 key
+      const pc2 = relPath.split('/'); const fileName2 = pc2[pc2.length - 1]
+      const articleName2 = fileName2.replace(/\.[^.]+$/, '')
+      const ext2 = fileName2.includes('.') ? fileName2.split('.').pop() : ''
+      const storagePath = uploadId + '/' + articleName2.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 60) + '.' + ext2
       try {
         await uploadFileToStorage(file, storagePath)
         // 标记到结构
-        const pc = relPath.split('/'); let fmtDir = pc[0].toLowerCase().trim()
+        let fmtDir = pc2[0].toLowerCase().trim()
         const matchedFmt = FORMAT_KEYS.find(k => fmtDir.includes(k))
         if (matchedFmt) fmtDir = matchedFmt
-        const fileName = pc[pc.length - 1]; const articleName = fileName.replace(/\.[^.]+$/, '')
+        const articleName = fileName2.replace(/\.[^.]+$/, '')
         const items = structure[fmtDir] || []
         const match = items.find(i => i.name === articleName && !i.storage_path)
         if (match) match.storage_path = storagePath
