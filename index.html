@@ -138,6 +138,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
       <div class="nav-item" data-page="ptxt" onclick="switchPage('ptxt')"><span>📃 搜狐 (ptxt)</span><span class="nav-badge" id="badge-ptxt">0</span></div>
       <div class="nav-item" data-page="txt" onclick="switchPage('txt')"><span>📝 网易/抖音 (txt)</span><span class="nav-badge" id="badge-txt">0</span></div>
       <div style="height:1px;background:var(--border);margin:8px 0"></div>
+      <div class="nav-item" data-page="history" onclick="switchPage('history')"><span>📝 上传记录</span><span class="nav-badge"></span></div>
       <div class="nav-item" data-page="overview" onclick="switchPage('overview')"><span>📊 总览</span><span class="nav-badge"></span></div>
     </div>
   </aside>
@@ -168,6 +169,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
     <div class="page" id="page-manage">
       <div class="page-header"><div class="page-title">⚙️ 管理</div><div class="page-desc">管理类型、模板、已用文章</div></div>
       <div id="manageContent"><div class="empty-state"><span class="icon">📁</span><p>请先上传文件夹</p></div></div>
+    </div>
+    <div class="page" id="page-history">
+      <div class="page-header"><div class="page-title">📝 上传记录</div><div class="page-desc">查看和管理每次上传的记录</div></div>
+      <div id="historyContent"><div class="empty-state"><span class="icon">📁</span><p>暂无上传记录</p></div></div>
     </div>
     <div class="page" id="page-overview">
       <div class="page-header"><div class="page-title">📊 总览</div><div class="page-desc">查看各平台筛选进度</div></div>
@@ -755,6 +760,7 @@ function switchPage(pageId) {
   const navItem = document.querySelector('[data-page="' + pageId + '"]')
   if (navItem) navItem.classList.add('active')
   currentPage = pageId
+  if (pageId === 'history') renderHistory()
   if (pageId === 'overview') renderOverview()
   if (pageId === 'heatmap') { if (state.uploaded) renderHeatmap() }
   if (pageId === 'manage') renderManage()
@@ -1162,6 +1168,94 @@ function showToast(msg, type) {
   clearTimeout(t._timer); t._timer = setTimeout(() => t.className = 'toast', 3000)
 }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
+
+// ==================== 上传记录 ====================
+function renderHistory() {
+  const c = document.getElementById('historyContent')
+  if (!state.uploaded && !Object.keys(state.typeData).length) { c.innerHTML = '<div class="empty-state"><span class="icon">📁</span><p>暂无上传记录</p></div>'; return }
+  let html = ''
+  for (const type of state.types) {
+    const td = state.typeData[type]
+    const usedSet = state.usedArticlesByType[type] || new Set()
+    if (td && td.folderStructure) {
+      for (const fmt of FORMAT_KEYS) {
+        const files = td.folderStructure[fmt] || []
+        if (!files.length) continue
+        const preview = files.slice(0, 5).map(f => f.name).join('<br>')
+        const more = files.length > 5 ? '<br>... 还有 ' + (files.length - 5) + ' 篇' : ''
+        html += '<div class="card"><div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px">' +
+          '<div style="flex:1"><div class="card-title">🏷️ ' + type + ' · ' + PLATFORM_CONFIG[fmt].icon + ' ' + PLATFORM_CONFIG[fmt].label + '</div>' +
+          '<div class="card-sub"><strong>' + files.length + '</strong> 篇文章（已导出 ' + usedSet.size + ' 篇）</div>' +
+          '<div style="max-height:120px;overflow-y:auto;font-size:13px;color:var(--text-muted);line-height:1.8;margin-top:8px">' + preview + more + '</div></div>' +
+          '<div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0">' +
+          '<button class="btn btn-sm btn-outline" onclick="changeUploadType(\'' + type + '\',\'' + fmt + '\')">✏️ 修改类型</button>' +
+          '<button class="btn btn-sm btn-danger" onclick="deleteUploadRecord(\'' + type + '\',\'' + fmt + '\')">🗑 删除</button></div></div></div>'
+      }
+    } else if (usedSet.size > 0) {
+      html += '<div class="card"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="card-title">🏷️ ' + type + '</div><div class="card-sub">已导出 <strong>' + usedSet.size + '</strong> 篇（原始文件已移除）</div></div>' +
+        '<button class="btn btn-sm btn-danger" onclick="deleteUploadRecord(\'' + type + '\',\'all\')">🗑 清空</button></div></div>'
+    }
+  }
+  c.innerHTML = html || '<div class="empty-state"><span class="icon">📁</span><p>暂无上传记录</p></div>'
+}
+
+async function changeUploadType(type, fmt) {
+  const newType = prompt('请输入新的提示词类型：', type)
+  if (!newType || !newType.trim() || newType.trim() === type) return
+  const targetType = newType.trim()
+  if (!state.types.includes(targetType)) { state.types.push(targetType); state.usedArticlesByType[targetType] = new Set() }
+  const td = state.typeData[type]
+  if (td && td.folderStructure && td.folderStructure[fmt]) {
+    if (!state.typeData[targetType]) state.typeData[targetType] = { folderStructure: {}, allArticleNames: [], formatFileCounts: {}, rootPath: td.rootPath || '' }
+    const ttd = state.typeData[targetType]
+    if (!ttd.folderStructure[fmt]) ttd.folderStructure[fmt] = []
+    ttd.folderStructure[fmt].push(...td.folderStructure[fmt])
+    ttd.allArticleNames = [...new Set([...ttd.allArticleNames, ...td.folderStructure[fmt].map(f => f.name)])]
+    ttd.formatFileCounts[fmt] = (ttd.formatFileCounts[fmt] || 0) + td.folderStructure[fmt].length
+    delete td.folderStructure[fmt]
+    if (!Object.keys(td.folderStructure).length) delete state.typeData[type]
+  }
+  await supabaseClient.from('articles').update({ type: targetType }).eq('type', type).eq('format', fmt)
+  if (state.usedArticlesByType[type]) {
+    if (!state.usedArticlesByType[targetType]) state.usedArticlesByType[targetType] = new Set()
+    for (const t of state.usedArticlesByType[type]) state.usedArticlesByType[targetType].add(t)
+    delete state.usedArticlesByType[type]
+  }
+  state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t]?.folderStructure || {}).length > 0)
+  await saveTypesToCloud()
+  await saveUsedToCloud()
+  updateTypeSelectors(); renderHistory(); updateNavBadges(); renderOverview()
+  FORMAT_KEYS.forEach(f => updateFilterPage(f))
+  showToast('已修改为「' + targetType + '」✅','success')
+}
+
+async function deleteUploadRecord(type, fmt) {
+  if (!confirm('确认删除「' + type + '」' + (fmt !== 'all' ? '的' + PLATFORM_CONFIG[fmt]?.label : '') + ' 的所有上传记录？')) return
+  if (fmt === 'all') {
+    delete state.typeData[type]
+    delete state.usedArticlesByType[type]
+    await supabaseClient.from('articles').delete().eq('type', type)
+    await saveUsedToCloud()
+  } else {
+    const td = state.typeData[type]
+    if (td && td.folderStructure) {
+      // 删除 Storage 中的文件
+      const files = td.folderStructure[fmt] || []
+      for (const f of files) {
+        if (f.storage_path) {
+          try { await supabaseClient.storage.from(STORAGE_BUCKET).remove([f.storage_path]) } catch(e) {}
+        }
+      }
+      delete td.folderStructure[fmt]
+      if (!Object.keys(td.folderStructure).length) delete state.typeData[type]
+    }
+    await supabaseClient.from('articles').delete().eq('type', type).eq('format', fmt)
+  }
+  state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t]?.folderStructure || {}).length > 0)
+  buildTagMatrix(); renderHistory(); updateNavBadges(); renderOverview()
+  FORMAT_KEYS.forEach(f => updateFilterPage(f))
+  showToast('已删除 ✅','success')
+}
 
 init()
 </script>
