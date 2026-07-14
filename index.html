@@ -1,0 +1,1164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>文章筛选导出工具</title>
+<style>
+:root{--bg:#fffdf7;--card-bg:#fff;--primary:#4a90e2;--primary-dark:#3a7bd5;--primary-light:#eef4ff;--success:#22c55e;--warning:#eab308;--danger:#ef4444;--text:#1f2937;--text-muted:#6b7280;--border:#e5e7eb;--border-light:#f3f4f6;--shadow:0 4px 20px rgba(0,0,0,0.04);--radius:12px;--radius-sm:8px}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;font-size:14px;color:var(--text);background:var(--bg);line-height:1.5}
+.app{display:flex;height:100vh;overflow:hidden}
+.sidebar{width:220px;background:#fff;border-right:1px solid var(--border);display:flex;flex-direction:column;padding:24px 16px;flex-shrink:0;overflow-y:auto}
+.logo{font-size:18px;font-weight:700;color:var(--text);margin-bottom:24px;display:flex;align-items:center;gap:10px}
+.nav-group{display:flex;flex-direction:column;gap:6px}
+.nav-item{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-radius:var(--radius-sm);cursor:pointer;color:var(--text-muted);transition:all 0.2s;text-decoration:none}
+.nav-item:hover{background:var(--primary-light);color:var(--primary)}
+.nav-item.active{background:var(--primary-light);color:var(--primary);font-weight:600}
+.nav-badge{font-size:11px;min-width:20px;height:20px;padding:0 6px;border-radius:10px;background:#e5e7eb;color:var(--text-muted);display:inline-flex;align-items:center;justify-content:center;font-weight:600}
+.nav-item.active .nav-badge{background:var(--primary);color:#fff}
+.main{flex:1;overflow-y:auto;padding:32px;min-width:0}
+.page{display:none;max-width:960px;margin:0 auto;animation:fadeIn 0.25s ease}
+.page.active{display:block}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.hidden{display:none!important}
+.page-header{margin-bottom:24px}
+.page-title{font-size:24px;font-weight:700;color:var(--text);margin-bottom:8px}
+.page-desc{font-size:14px;color:var(--text-muted)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 16px;border-radius:var(--radius-sm);border:1px solid transparent;font-size:14px;font-weight:500;cursor:pointer;transition:all 0.2s;background:#fff;color:var(--text);border-color:var(--border)}
+.btn:hover{background:var(--border-light);border-color:#d1d5db}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.btn-primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+.btn-primary:hover{background:var(--primary-dark)}
+.btn-success{background:var(--success);color:#fff;border-color:var(--success)}
+.btn-success:hover{background:#16a34a}
+.btn-danger{background:var(--danger);color:#fff;border-color:var(--danger)}
+.btn-danger:hover{background:#dc2626}
+.btn-outline{background:#fff;color:var(--text);border-color:var(--border)}
+.btn-outline:hover{background:var(--primary-light);border-color:var(--primary);color:var(--primary)}
+.btn-sm{padding:6px 12px;font-size:13px}
+.btn-group{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+.card{background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:20px;box-shadow:var(--shadow)}
+.card-title{font-size:16px;font-weight:700;color:var(--text);margin-bottom:8px}
+.card-sub{font-size:13px;color:var(--text-muted);margin-bottom:16px}
+.form-group{margin-bottom:16px}
+.form-group label{display:block;font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px}
+.form-actions{display:flex;gap:12px;justify-content:flex-end;margin-top:20px}
+.type-selector,.type-selector-nomodal{width:100%;padding:10px 14px;border:2px solid var(--border);border-radius:var(--radius-sm);font-size:14px;outline:none;background:#fff;color:var(--text)}
+.type-selector:focus,.type-selector-nomodal:focus{border-color:var(--primary)}
+.upload-zone{border:2px dashed var(--border);border-radius:var(--radius);padding:48px 32px;text-align:center;background:var(--card-bg);transition:all 0.2s;cursor:pointer;margin-bottom:24px}
+.upload-zone:hover{border-color:var(--primary);background:var(--primary-light)}
+.upload-zone.drag-over{border-color:var(--primary);background:var(--primary-light);transform:scale(1.01)}
+.upload-zone.has-files{border-color:var(--success);background:#f0fdf4}
+.upload-zone .icon{font-size:40px;margin-bottom:12px;display:block}
+.upload-zone .title{font-size:18px;font-weight:600;color:var(--text);margin-bottom:8px}
+.upload-zone .desc{font-size:13px;color:var(--text-muted)}
+.upload-success{display:none;background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:24px}
+.upload-success.visible{display:block}
+.upload-stats{display:flex;gap:24px;flex-wrap:wrap;margin-top:12px}
+.upload-stats .item{font-size:14px;color:var(--text-muted)}
+.upload-stats .item strong{color:var(--primary);font-size:18px;margin-right:4px}
+.city-list{display:flex;flex-direction:column;gap:10px;margin-bottom:16px}
+.city-item{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--border-light);border-radius:var(--radius-sm);border:1px solid var(--border)}
+.city-item input[type="text"],.city-item input[type="number"]{padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:14px;outline:none}
+.city-item input[type="text"]{flex:1}
+.city-item input[type="number"]{width:80px}
+.city-label{font-size:13px;color:var(--text-muted);font-weight:500}
+.btn-remove-city{width:28px;height:28px;border-radius:6px;border:1px solid var(--border);background:#fff;color:var(--danger);cursor:pointer;font-size:16px;display:inline-flex;align-items:center;justify-content:center}
+.btn-remove-city:hover{background:#fef2f2;border-color:var(--danger)}
+.preset-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.preset-label{font-size:13px;color:var(--text-muted)}
+.tpl-input{width:80px;padding:8px 10px;border:1px solid var(--border);border-radius:6px}
+.stats{display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;padding:16px;background:var(--border-light);border-radius:var(--radius-sm)}
+.stat-item{flex:1;min-width:80px;text-align:center}
+.stat-item .val{font-size:24px;font-weight:700;color:var(--primary)}
+.stat-item .lbl{font-size:12px;color:var(--text-muted);margin-top:2px}
+.badge-num{background:var(--primary);color:#fff;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600}
+.progress-wrap{display:none;margin-top:16px}
+.progress-wrap.visible{display:block}
+.progress-label{display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:6px}
+.progress-bar{height:8px;background:var(--border-light);border-radius:4px;overflow:hidden}
+.progress-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--primary),var(--primary-dark));border-radius:4px;transition:width 0.3s ease}
+.progress-fill.complete{background:var(--success)}
+.log-area{display:none;max-height:220px;overflow-y:auto;background:#f9fafb;border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin-top:16px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.7}
+.log-area.visible{display:block}
+.log-info{color:var(--text-muted)}
+.log-success{color:var(--success)}
+.log-warn{color:var(--warning)}
+.log-error{color:var(--danger)}
+.heatmap-legend{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;font-size:13px;color:var(--text-muted)}
+.heatmap-legend-item{display:inline-flex;align-items:center;gap:6px}
+.heatmap-legend-dot{width:10px;height:10px;border-radius:50%}
+.heatmap-wrap{overflow-x:auto}
+.heatmap-table{width:100%;border-collapse:collapse;font-size:13px;background:#fff;border:1px solid var(--border)}
+.heatmap-table th,.heatmap-table td{padding:10px 12px;text-align:center;border:1px solid var(--border)}
+.heatmap-table th{background:var(--border-light);color:var(--text-muted);font-weight:600}
+.heatmap-table td:first-child{font-weight:600;text-align:left;background:var(--border-light)}
+.overview-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
+.platform-card{background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow);transition:transform 0.2s}
+.platform-card:hover{transform:translateY(-2px);box-shadow:0 8px 30px rgba(0,0,0,0.08)}
+.platform-card .h{font-size:16px;font-weight:700;color:var(--text);margin-bottom:8px}
+.platform-card .info{font-size:13px;color:var(--text-muted)}
+.modal{display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.45);align-items:center;justify-content:center;padding:20px}
+.modal.show{display:flex}
+.modal-content{background:#fff;border-radius:var(--radius);padding:24px;width:100%;max-width:440px;box-shadow:0 20px 60px rgba(0,0,0,0.15);animation:modalIn 0.2s ease}
+@keyframes modalIn{from{opacity:0;transform:scale(0.96)}to{opacity:1;transform:scale(1)}}
+.modal-title{font-size:18px;font-weight:700;margin-bottom:8px}
+.toast{position:fixed;top:20px;right:20px;z-index:2000;padding:12px 20px;border-radius:var(--radius-sm);background:var(--text);color:#fff;font-size:14px;box-shadow:0 10px 40px rgba(0,0,0,0.12);opacity:0;transform:translateY(-10px);transition:all 0.3s ease;pointer-events:none}
+.toast.show{opacity:1;transform:translateY(0)}
+.toast.info{background:var(--primary)}
+.toast.success{background:var(--success)}
+.toast.error{background:var(--danger)}
+.empty-state{text-align:center;padding:48px 20px;color:var(--text-muted)}
+.empty-state .icon{font-size:40px;display:block;margin-bottom:12px}
+.table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-sm)}
+.table-wrap table{width:100%;border-collapse:collapse;font-size:13px}
+.table-wrap th,.table-wrap td{padding:10px 12px;border-bottom:1px solid var(--border);text-align:left}
+.table-wrap th{background:var(--border-light);font-weight:600;color:var(--text-muted)}
+.article-name{font-size:13px;color:var(--text);line-height:1.8}
+.preview-table th,.preview-table td{text-align:center;padding:8px 12px;border:1px solid var(--border)}
+.preview-table th{background:var(--border-light)}
+.visible{display:block!important}
+.sync-bar{background:#eef4ff;border:1px solid #4a90e2;border-radius:8px;padding:10px 16px;margin-bottom:16px;font-size:13px;color:var(--text);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.sync-bar .dot{width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="logo">📂 文章筛选</div>
+    <div class="nav-group">
+      <div class="nav-item" data-page="upload" onclick="switchPage('upload')"><span>📁 上传文件夹</span><span class="nav-badge" id="uploadBadge">必做</span></div>
+      <div class="nav-item" data-page="heatmap" onclick="switchPage('heatmap')"><span>🔥 热力图</span><span class="nav-badge"></span></div>
+      <div class="nav-item" data-page="manage" onclick="switchPage('manage')"><span>⚙️ 管理</span><span class="nav-badge"></span></div>
+      <div style="height:1px;background:var(--border);margin:8px 0"></div>
+      <div class="nav-item" data-page="docx" onclick="switchPage('docx')"><span>📄 头条 (docx)</span><span class="nav-badge" id="badge-docx">0</span></div>
+      <div class="nav-item" data-page="excel" onclick="switchPage('excel')"><span>📊 资讯 (xlsx)</span><span class="nav-badge" id="badge-excel">0</span></div>
+      <div class="nav-item" data-page="ptxt" onclick="switchPage('ptxt')"><span>📃 搜狐 (ptxt)</span><span class="nav-badge" id="badge-ptxt">0</span></div>
+      <div class="nav-item" data-page="txt" onclick="switchPage('txt')"><span>📝 网易/抖音 (txt)</span><span class="nav-badge" id="badge-txt">0</span></div>
+      <div style="height:1px;background:var(--border);margin:8px 0"></div>
+      <div class="nav-item" data-page="overview" onclick="switchPage('overview')"><span>📊 总览</span><span class="nav-badge"></span></div>
+    </div>
+  </aside>
+  <main class="main">
+    <div class="page active" id="page-upload">
+      <div class="page-header"><div class="page-title">📁 上传文件夹</div><div class="page-desc">选择包含 docx/excel/ptxt/txt 子目录的根文件夹</div></div>
+      <div class="sync-bar"><span class="dot"></span> <span id="syncStatus">已连接云存储</span></div>
+      <div class="upload-zone" id="uploadZone" onclick="triggerFolderInput()">
+        <span class="icon">📂</span>
+        <div class="title">拖拽或点击上传文件夹</div>
+        <div class="desc">文章集合 / docx / 标题.docx · excel / 标题.xlsx · ptxt / 标题.ptxt · txt / 标题.txt</div>
+        <button class="btn btn-primary" style="margin-top:16px" onclick="event.stopPropagation();triggerFolderInput()">选择文件夹</button>
+      </div>
+      <div class="upload-success" id="uploadSuccess">
+        <div style="font-size:16px;font-weight:600;color:var(--success)">✅ 上传成功</div>
+        <div class="upload-stats">
+          <div class="item"><strong id="usFmts">0</strong> 个格式</div>
+          <div class="item"><strong id="usArticles">0</strong> 篇不同文章</div>
+          <div class="item"><strong id="usFiles">0</strong> 个文件</div>
+        </div>
+        <button class="btn btn-sm btn-outline" style="margin-top:12px" onclick="resetUpload()">重新选择</button>
+      </div>
+    </div>
+    <div class="page" id="page-heatmap">
+      <div class="page-header"><div class="page-title">🔥 生产热力图</div><div class="page-desc">城市 × 关键词 交叉库存热力图</div></div>
+      <div id="heatmapContent"><div class="empty-state"><span class="icon">📁</span><p>请先上传文件夹</p></div></div>
+    </div>
+    <div class="page" id="page-manage">
+      <div class="page-header"><div class="page-title">⚙️ 管理</div><div class="page-desc">管理类型、模板、已用文章</div></div>
+      <div id="manageContent"><div class="empty-state"><span class="icon">📁</span><p>请先上传文件夹</p></div></div>
+    </div>
+    <div class="page" id="page-overview">
+      <div class="page-header"><div class="page-title">📊 总览</div><div class="page-desc">查看各平台筛选进度</div></div>
+      <div id="overviewContent"><div class="empty-state"><span class="icon">📁</span><p>请先上传文件夹</p></div></div>
+    </div>
+  </main>
+</div>
+<input type="file" id="folderInput" webkitdirectory directory multiple style="display:none" onchange="handleFolderSelect(event)">
+<div class="toast" id="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// ==================== 云存储配置 ====================
+const SUPABASE_URL = 'https://qakhunwlyvnjwlqemzmj.supabase.co'
+const SUPABASE_ANON_KEY = 'sb_publishable_c7oAd9P7LPYd4b3-t7aG9g_3MumqVRS'
+const STORAGE_BUCKET = 'articles'
+
+let supabaseClient = null
+
+async function initCloud() {
+  try {
+    supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+    await ensureStorageBucket()
+    document.getElementById('syncStatus').textContent = '已连接云存储'
+    document.getElementById('syncStatus').style.color = '#22c55e'
+    await loadAllFromCloud()
+  } catch(e) {
+    console.error('云存储初始化失败', e)
+    document.getElementById('syncStatus').textContent = '⚠️ 未连接云存储（离线模式）'
+    document.getElementById('syncStatus').style.color = '#ef4444'
+  }
+}
+
+async function ensureStorageBucket() {
+  try {
+    const { data: buckets } = await supabaseClient.storage.listBuckets()
+    if (!buckets?.find(b => b.name === STORAGE_BUCKET)) {
+      await supabaseClient.storage.createBucket(STORAGE_BUCKET, { public: false })
+    }
+  } catch(e) { console.error('Storage bucket 初始化', e) }
+}
+
+async function uploadFileToStorage(file, path) {
+  const { error } = await supabaseClient.storage.from(STORAGE_BUCKET).upload(path, file, { upsert: true })
+  if (error) throw error
+  return path
+}
+async function downloadFromStorage(path) {
+  const { data, error } = await supabaseClient.storage.from(STORAGE_BUCKET).download(path)
+  if (error) throw error
+  return await data.arrayBuffer()
+}
+
+// ==================== Supabase 数据操作 ====================
+async function loadAllFromCloud() {
+  try {
+    const [typesRes, articlesRes, templatesRes, usedRes, filtersRes] = await Promise.all([
+      supabaseClient.from('types').select('name'),
+      supabaseClient.from('articles').select('type, format, title, city, keywords, storage_path'),
+      supabaseClient.from('templates').select('*'),
+      supabaseClient.from('used_articles').select('type, title'),
+      supabaseClient.from('filter_configs').select('*')
+    ])
+    // 加载类型
+    if (typesRes.data && typesRes.data.length > 0) {
+      state.types = typesRes.data.map(t => t.name)
+      if (!state.types.includes('提示词一')) state.types.unshift('提示词一')
+    }
+    state.types.forEach(t => { if (!state.usedArticlesByType[t]) state.usedArticlesByType[t] = new Set() })
+    // 加载已用文章
+    if (usedRes.data) {
+      usedRes.data.forEach(u => {
+        if (state.usedArticlesByType[u.type]) state.usedArticlesByType[u.type].add(u.title)
+      })
+    }
+    // 加载模板
+    if (templatesRes.data) {
+      FORMAT_KEYS.forEach(f => state.templates[f] = [])
+      templatesRes.data.forEach(t => {
+        if (state.templates[t.format]) state.templates[t.format].push({ name: t.name, filterMode: t.filter_mode, cities: t.cities || [] })
+      })
+    }
+    // 加载筛选配置
+    if (filtersRes.data) {
+      filtersRes.data.forEach(f => {
+        if (state.filters[f.format]) {
+          state.filters[f.format].filterMode = f.filter_mode || 'free'
+          state.filters[f.format].cities = f.cities || []
+          state.filters[f.format].templateCounts = f.template_counts || {}
+          state.filters[f.format].titleFilterOn = f.title_filter_on || false
+        }
+      })
+    }
+    // 重建文章内存数据
+    if (articlesRes.data && articlesRes.data.length > 0) {
+      state.typeData = {}
+      articlesRes.data.forEach(a => {
+        if (!state.typeData[a.type]) state.typeData[a.type] = { folderStructure: {}, allArticleNames: [], formatFileCounts: {}, rootPath: a.type + '/cloud' }
+        if (!state.typeData[a.type].folderStructure[a.format]) state.typeData[a.type].folderStructure[a.format] = []
+        state.typeData[a.type].folderStructure[a.format].push({
+          name: a.title, fullName: a.title + '.' + ({docx:'docx',excel:'xlsx',ptxt:'ptxt',txt:'txt'}[a.format] || a.format),
+          storage_path: a.storage_path, city: a.city, keywords: a.keywords || []
+        })
+        if (!state.typeData[a.type].allArticleNames.includes(a.title)) state.typeData[a.type].allArticleNames.push(a.title)
+        state.typeData[a.type].formatFileCounts[a.format] = (state.typeData[a.type].formatFileCounts[a.format] || 0) + 1
+      })
+      state.uploaded = Object.keys(state.typeData).length > 0
+    }
+    updateTypeSelectors(); updateNavBadges(); renderManage(); renderOverview();
+    if (state.uploaded) { buildTagMatrix(); renderHeatmap(); }
+  } catch(e) { console.error('加载云数据失败', e) }
+}
+
+async function saveTypesToCloud() {
+  try {
+    const { error } = await supabaseClient.from('types').upsert(
+      state.types.map(n => ({ name: n })),
+      { onConflict: 'name' }
+    )
+    if (error) console.error('保存类型错误', error)
+  } catch(e) { console.error('保存类型失败', e) }
+}
+async function saveTemplatesToCloud() {
+  try {
+    await supabaseClient.from('templates').delete().neq('format', '_')
+    for (const fmt of FORMAT_KEYS) {
+      for (const t of state.templates[fmt]) {
+        await supabaseClient.from('templates').upsert({ format: fmt, name: t.name, filter_mode: t.filterMode || 'free', cities: t.cities || [] })
+      }
+    }
+  } catch(e) {}
+}
+async function saveUsedToCloud() {
+  try {
+    await supabaseClient.from('used_articles').delete().neq('type', '_')
+    const rows = []
+    for (const [type, set] of Object.entries(state.usedArticlesByType)) {
+      for (const title of set) rows.push({ type, title })
+    }
+    if (rows.length) await supabaseClient.from('used_articles').insert(rows)
+  } catch(e) {}
+}
+async function saveFiltersToCloud() {
+  try {
+    await supabaseClient.from('filter_configs').delete().neq('format', '_')
+    for (const fmt of FORMAT_KEYS) {
+      const f = state.filters[fmt]
+      await supabaseClient.from('filter_configs').upsert({
+        format: fmt, type: f.activeType || state.activeType,
+        filter_mode: f.filterMode, cities: f.cities, template_counts: f.templateCounts || {},
+        title_filter_on: f.titleFilterOn || false
+      })
+    }
+  } catch(e) {}
+}
+async function saveArticlesToCloud(type, data) {
+  try {
+    if (!data) return
+    const rows = []
+    for (const fmt of FORMAT_KEYS) {
+      for (const f of (data.folderStructure[fmt] || [])) {
+        if (f.storage_path) {
+          rows.push({ type, format: fmt, title: f.name, city: f.city, keywords: f.keywords, storage_path: f.storage_path })
+        }
+      }
+    }
+    if (rows.length > 0) {
+      for (let i = 0; i < rows.length; i += 100) {
+        const { error } = await supabaseClient.from('articles').upsert(rows.slice(i, i + 100), { onConflict: 'type,title', ignoreDuplicates: false })
+        if (error) console.error('插入文章错误', error)
+      }
+    }
+  } catch(e) { console.error('保存文章到云失败', e) }
+}
+
+async function syncToCloud() {
+  await Promise.all([saveTypesToCloud(), saveTemplatesToCloud(), saveUsedToCloud(), saveFiltersToCloud()])
+}
+
+// ==================== 全局常量 ====================
+const FORMAT_KEYS = ['docx', 'excel', 'ptxt', 'txt']
+const PLATFORM_CONFIG = { docx:{icon:'📄',label:'头条',ext:'docx'}, excel:{icon:'📊',label:'资讯文章',ext:'xlsx'}, ptxt:{icon:'📃',label:'搜狐',ext:'ptxt'}, txt:{icon:'📝',label:'网易/抖音',ext:'txt'} }
+const TEMPLATE_CITIES = ['上海','北京','广州','南京','香港','新加坡','英国','美国','澳洲','深圳','重庆','苏州','成都','杭州','武汉','宁波','天津','青岛','无锡','长沙','郑州','济南','合肥','福州','泉州']
+const CITY_ALIASES = { '澳大利亚':'澳洲', '紐約':'美国', '伦敦':'英国', '洛杉矶':'美国', '旧金山':'美国', '悉尼':'澳洲', '墨尔本':'澳洲', '多伦多':'美国' }
+const KEYWORDS = [{word:'排名',pct:15.77},{word:'推荐',pct:8.71},{word:'指南',pct:7.56},{word:'选择',pct:5.66},{word:'哪家',pct:5.46},{word:'口碑',pct:4.52},{word:'解析',pct:4.42},{word:'排行榜',pct:3.63},{word:'测评',pct:3.61},{word:'对比',pct:3.48},{word:'专业',pct:3.48},{word:'品牌',pct:3.37},{word:'避坑',pct:3.33},{word:'实力',pct:2.99},{word:'十大',pct:2.84},{word:'深度',pct:2.45},{word:'盘点',pct:2.41},{word:'综合',pct:2.15},{word:'榜单',pct:2.13},{word:'值得',pct:2.11},{word:'文书',pct:2.03},{word:'案例',pct:2.03},{word:'10',pct:2.01},{word:'优势',pct:1.94},{word:'权威',pct:1.90}]
+
+let cityIdCounter = 0, currentPage = 'upload'
+
+const state = {
+  types: ['提示词一'], usedArticlesByType: { '提示词一': new Set() },
+  filters: {}, typeData: {}, uploaded: false, activeType: '提示词一', templates: {},
+  tagMatrixByType: {}, cityArticleCountByType: {},
+  _heatmapFormat: 'docx', _heatmapType: '全部', _manageTab: 'types'
+}
+FORMAT_KEYS.forEach(f => {
+  state.filters[f] = { activeType: '提示词一', filterMode: 'free', cities: [], templateCounts: {}, titleFilterOn: false, preview: null }
+  state.templates[f] = []
+})
+
+// ==================== 类型选择器更新 ====================
+function updateTypeSelectors() {
+  document.querySelectorAll('.type-selector').forEach(sel => {
+    const cur = sel.value; sel.innerHTML = state.types.map(t => '<option value="' + t + '">' + t + '</option>').join('')
+    sel.value = state.types.includes(cur) ? cur : state.types[0]
+  })
+  document.querySelectorAll('.type-selector-nomodal').forEach(sel => {
+    const cur = sel.value; sel.innerHTML = state.types.map(t => '<option value="' + t + '">' + t + '</option>').join('')
+    sel.value = state.types.includes(cur) ? cur : state.types[0]
+  })
+}
+
+// ==================== 类型管理 ====================
+async function addType(name) {
+  if (!name || !name.trim()) { showToast('请输入类型名称','error'); return }
+  name = name.trim()
+  if (state.types.includes(name)) { showToast('类型已存在','error'); return }
+  state.types.push(name); state.usedArticlesByType[name] = new Set()
+  await saveTypesToCloud(); updateTypeSelectors(); renderManage()
+  FORMAT_KEYS.forEach(f => updateFilterPage(f)); renderOverview()
+  showToast('类型「' + name + '」已创建 ✅','success')
+}
+async function renameType(oldName, newName) {
+  if (!newName || !newName.trim()) return; newName = newName.trim()
+  const idx = state.types.indexOf(oldName); if (idx === -1) return
+  state.types[idx] = newName
+  state.usedArticlesByType[newName] = state.usedArticlesByType[oldName] || new Set()
+  if (oldName !== newName) delete state.usedArticlesByType[oldName]
+  if (state.activeType === oldName) state.activeType = newName
+  if (state.typeData[oldName]) { state.typeData[newName] = state.typeData[oldName]; delete state.typeData[oldName] }
+  if (state.tagMatrixByType[oldName]) { state.tagMatrixByType[newName] = state.tagMatrixByType[oldName]; delete state.tagMatrixByType[oldName] }
+  if (state.cityArticleCountByType[oldName]) { state.cityArticleCountByType[newName] = state.cityArticleCountByType[oldName]; delete state.cityArticleCountByType[oldName] }
+  await saveTypesToCloud(); updateTypeSelectors(); renderManage()
+  FORMAT_KEYS.forEach(f => updateFilterPage(f)); renderOverview()
+  showToast('已重命名为「' + newName + '」✅','success')
+}
+async function removeType(name) {
+  const idx = state.types.indexOf(name); if (idx === -1) return
+  state.types.splice(idx, 1); delete state.usedArticlesByType[name]
+  delete state.typeData[name]; delete state.tagMatrixByType[name]; delete state.cityArticleCountByType[name]
+  if (state.activeType === name) state.activeType = state.types[0] || '提示词一'
+  if (state.types.length === 0) { state.types.push('提示词一'); state.usedArticlesByType['提示词一'] = new Set() }
+  state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t].folderStructure || {}).length > 0)
+  await Promise.all([saveTypesToCloud(), supabaseClient.from('articles').delete().eq('type', name)])
+  updateTypeSelectors(); renderManage()
+  FORMAT_KEYS.forEach(f => updateFilterPage(f)); renderOverview()
+  showToast('类型已删除','info')
+}
+
+// ==================== 模板管理 ====================
+function showSaveTemplateDialog(format) {
+  let cities
+  if (state.filters[format].filterMode === 'template') cities = Object.entries(state.filters[format].templateCounts || {}).filter(([c, n]) => n > 0)
+  else cities = state.filters[format].cities.filter(c => c.name.trim() && c.count > 0).map(c => [c.name, c.count])
+  if (!cities.length) { showToast('请先设置城市数量','error'); return }
+  const name = prompt('请输入模板名称：'); if (!name) return
+  if (state.templates[format].find(t => t.name === name)) { showToast('模板名称已存在','error'); return }
+  state.templates[format].push({ name, cities: cities.map(([city, count]) => ({ city, count })), filterMode: state.filters[format].filterMode })
+  saveTemplatesToCloud(); renderTemplateList(format); renderManage()
+  showToast('模板已保存 ✅','success')
+}
+function renderTemplateList(format) {
+  const el = document.getElementById('templateList-' + format); if (!el) return
+  const list = state.templates[format]
+  if (!list.length) { el.innerHTML = ''; return }
+  el.innerHTML = '<div style="font-size:13px;font-weight:600;margin-bottom:6px;color:var(--text-muted)">已保存的模板：</div>' +
+    list.map(t => '<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#f8fafc;border-radius:8px;border:1px solid var(--border);margin-bottom:4px">' +
+      '<span style="flex:1;font-size:13px">📋 ' + t.name + '</span>' +
+      '<button class="btn btn-sm btn-outline" onclick="applyTemplate(\'' + format + '\',\'' + t.name + '\')">应用</button>' +
+      '<button class="btn btn-sm btn-danger" onclick="deleteTemplate(\'' + format + '\',\'' + t.name + '\')">删除</button></div>').join('')
+}
+function applyTemplate(format, name) {
+  const tpl = state.templates[format].find(t => t.name === name); if (!tpl) return
+  setFilterMode(format, tpl.filterMode)
+  if (tpl.filterMode === 'template') {
+    state.filters[format].templateCounts = {}
+    tpl.cities.forEach(({ city, count }) => { state.filters[format].templateCounts[city] = count })
+    renderTemplateCityList(format)
+  } else {
+    state.filters[format].cities = []
+    tpl.cities.forEach(({ city, count }) => addCity(format, city, count))
+  }
+  saveFiltersToCloud(); showToast('已应用模板「' + name + '」✅','success')
+}
+async function deleteTemplate(format, name) {
+  if (!confirm('确认删除模板「' + name + '」？')) return
+  state.templates[format] = state.templates[format].filter(t => t.name !== name)
+  await saveTemplatesToCloud(); renderTemplateList(format); renderManage()
+  showToast('模板已删除','info')
+}
+
+// ==================== 初始化 ====================
+async function init() {
+  await initCloud()
+  setupDragDrop()
+  generateFilterPages()
+  FORMAT_KEYS.forEach(f => { addCity(f); renderTemplateCityList(f); renderTemplateList(f) })
+  updateNavBadges(); renderManage()
+}
+
+// ==================== 拖拽上传 ====================
+function setupDragDrop() {
+  const zone = document.getElementById('uploadZone')
+  ;['dragover','dragenter'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.add('drag-over') }))
+  ;['dragleave','drop'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.remove('drag-over') }))
+  zone.addEventListener('drop', async ev => {
+    ev.preventDefault(); zone.classList.remove('drag-over')
+    const files = Array.from(ev.dataTransfer.files || [])
+    if (files.length > 0 && files[0].webkitRelativePath) { await processFiles(files); return }
+    const entries = []
+    for (const item of (ev.dataTransfer?.items || [])) { const e = item.webkitGetAsEntry?.(); if (e) entries.push(e) }
+    if (!entries.length) { showToast('未识别','error'); return }
+    showToast('遍历文件夹...','info')
+    const allFiles = []
+    for (const e of entries) await traverseEntry(e, allFiles)
+    if (allFiles.length > 0) await processFiles(allFiles); else showToast('未找到文件','error')
+  })
+}
+async function traverseEntry(entry, list, parentPath) {
+  if (entry.isFile) {
+    const f = await new Promise(r => entry.file(r))
+    Object.defineProperty(f, 'webkitRelativePath', { value: (parentPath ? parentPath + '/' : '') + entry.name, writable: false })
+    list.push(f)
+  } else if (entry.isDirectory) {
+    const reader = entry.createReader(); let sub = [], reading = true
+    while (reading) { const b = await new Promise(r => reader.readEntries(r)); if (!b.length) reading = false; else sub = sub.concat(b) }
+    for (const c of sub) await traverseEntry(c, list, (parentPath ? parentPath + '/' : '') + entry.name)
+  }
+}
+function triggerFolderInput() { document.getElementById('folderInput').click() }
+
+// ==================== 文件处理 ====================
+async function handleFolderSelect(ev) { const files = Array.from(ev.target.files || []); if (files.length) await processFiles(files) }
+async function processFiles(files) {
+  showToast('分析文件夹结构...','info')
+  try {
+    const structure = {}; const fileCounts = {}; const nameSet = new Set()
+    let depthCount = {}, samplePath = ''
+    for (const f of files) {
+      const p = f.webkitRelativePath || f._relativePath || ''
+      if (!samplePath) samplePath = p
+      depthCount[p.split('/').length] = (depthCount[p.split('/').length] || 0) + 1
+    }
+    let maxDepth = 0, maxCount = 0
+    for (const [d, c] of Object.entries(depthCount)) { if (c > maxCount) { maxCount = c; maxDepth = parseInt(d) } }
+    const isRootDir = maxDepth >= 3
+    for (const file of files) {
+      let relPath = file.webkitRelativePath || file._relativePath || ''
+      const parts = relPath.split('/')
+      if (isRootDir && parts.length >= 3) relPath = parts.slice(1).join('/')
+      const pc = relPath.split('/')
+      if (pc.length < 2) continue
+      let fmtDir = pc[0].toLowerCase().trim()
+      const fileName = pc[pc.length - 1]
+      if (!fileName || fileName.startsWith('.')) continue
+      const articleName = fileName.replace(/\.[^.]+$/, '')
+      // 容错：匹配目录名中包含的格式（处理"txt的副本"等情况）
+      const matchedFmt = FORMAT_KEYS.find(k => fmtDir.includes(k))
+      if (matchedFmt) fmtDir = matchedFmt
+      if (!structure[fmtDir]) structure[fmtDir] = []
+      structure[fmtDir].push({ name: articleName, fullName: fileName, relativePath: relPath, subfolder: pc.length > 2 ? pc[1] : null, file, city: detectCity(articleName), keywords: detectKeywords(articleName), storage_path: '' })
+      nameSet.add(articleName)
+      fileCounts[fmtDir] = (fileCounts[fmtDir] || 0) + 1
+    }
+    // 上传到 Supabase Storage
+    showToast('正在上传到云存储...','info')
+    const uploadId = Date.now().toString(36)
+    let uploaded = 0, total = files.length, failCount = 0
+    for (const file of files) {
+      let relPath = file.webkitRelativePath || file._relativePath || ''
+      const parts = relPath.split('/')
+      if (isRootDir && parts.length >= 3) relPath = parts.slice(1).join('/')
+      const storagePath = uploadId + '/' + relPath
+      try {
+        await uploadFileToStorage(file, storagePath)
+        // 标记到结构
+        const pc = relPath.split('/'); let fmtDir = pc[0].toLowerCase().trim()
+        const matchedFmt = FORMAT_KEYS.find(k => fmtDir.includes(k))
+        if (matchedFmt) fmtDir = matchedFmt
+        const fileName = pc[pc.length - 1]; const articleName = fileName.replace(/\.[^.]+$/, '')
+        const items = structure[fmtDir] || []
+        const match = items.find(i => i.name === articleName && !i.storage_path)
+        if (match) match.storage_path = storagePath
+        uploaded++
+      } catch(e) { failCount++ }
+      if (uploaded % 50 === 0) showToast('云存储上传中 ' + uploaded + '/' + total + '...','info')
+    }
+    if (failCount > 0) showToast(failCount + ' 个文件上传失败','error')
+    pendingParsedFiles = {
+      folderStructure: structure,
+      allArticleNames: Array.from(nameSet),
+      formatFileCounts: fileCounts,
+      rootPath: samplePath.split('/')[0] || '文章集合'
+    }
+    showTypeSelectDialog()
+  } catch(err) { console.error(err); showToast('解析失败: ' + err.message, 'error') }
+}
+
+// ==================== 类型选择弹窗 ====================
+function showTypeSelectDialog() {
+  const div = document.createElement('div'); div.className = 'modal show'; div.id = 'typeModal'
+  div.innerHTML = '<div class="modal-content" onclick="event.stopPropagation()">' +
+    '<div class="modal-title">📋 选择文章类型</div>' +
+    '<p style="font-size:14px;color:var(--text-muted);margin-bottom:16px">这批文章属于哪个类型？</p>' +
+    '<div class="form-group"><label>已有类型</label><select id="typeSelectExisting" class="type-selector-nomodal">' +
+    state.types.map(t => '<option value="' + t + '">' + t + '</option>').join('') + '</select></div>' +
+    '<div class="form-group"><label>或创建新类型</label><input type="text" id="typeInputNew" placeholder="输入新类型名称" oninput="document.getElementById(\'typeSelectExisting\').value=\'\'"></div>' +
+    '<div class="form-actions"><button class="btn btn-outline" onclick="document.getElementById(\'typeModal\').remove();pendingParsedFiles=null">取消上传</button>' +
+    '<button class="btn btn-primary" onclick="confirmType()">确认</button></div></div>'
+  document.body.appendChild(div)
+}
+async function confirmType() {
+  const select = document.getElementById('typeSelectExisting')
+  const input = document.getElementById('typeInputNew')
+  let typeName = select.value
+  if (input.value.trim()) typeName = input.value.trim()
+  if (!typeName) { showToast('请选择或输入类型名称','error'); return }
+  if (!state.types.includes(typeName)) { state.types.push(typeName); state.usedArticlesByType[typeName] = new Set() }
+  state.activeType = typeName
+  FORMAT_KEYS.forEach(f => { state.filters[f].activeType = typeName })
+  if (pendingParsedFiles) {
+    state.typeData[typeName] = pendingParsedFiles
+    state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t].folderStructure || {}).length > 0)
+    // 保存到 Supabase（先存类型，再存文章，避免外键冲突）
+    await saveTypesToCloud()
+    await saveArticlesToCloud(typeName, pendingParsedFiles)
+    pendingParsedFiles = null
+  }
+  updateTypeSelectors()
+  document.getElementById('typeModal').remove()
+  updateUploadUI(); updateNavBadges(); renderOverview(); renderManage()
+  switchPage('overview')
+  const td = state.typeData[typeName] || {}
+  showToast('✅ 已归入「' + typeName + '」，共 ' + (td.allArticleNames || []).length + ' 篇文章','success')
+}
+function updateUploadUI() {
+  const zone = document.getElementById('uploadZone'); const success = document.getElementById('uploadSuccess')
+  zone.classList.add('has-files'); success.classList.add('visible')
+  const td = state.typeData[state.activeType] || {}
+  const fs = td.folderStructure || {}; const an = td.allArticleNames || []; const fc = td.formatFileCounts || {}
+  document.getElementById('usFmts').textContent = FORMAT_KEYS.filter(k => fs[k]).length
+  document.getElementById('usArticles').textContent = an.length
+  let totalF = 0; Object.values(fc).forEach(c => totalF += c)
+  document.getElementById('usFiles').textContent = totalF
+  document.getElementById('uploadBadge').textContent = '✓'
+  buildTagMatrix(); renderHeatmap()
+}
+async function resetUpload() {
+  state.typeData = {}; state.uploaded = false
+  document.getElementById('uploadZone').classList.remove('has-files')
+  document.getElementById('uploadSuccess').classList.remove('visible')
+  document.getElementById('uploadBadge').textContent = '必做'
+  document.getElementById('folderInput').value = ''
+  renderOverview(); updateNavBadges(); switchPage('upload')
+}
+
+// ==================== 热力图 ====================
+function buildTagMatrix() {
+  state.tagMatrixByType = {}; state.cityArticleCountByType = {}
+  for (const type of state.types) {
+    const td = state.typeData[type] || {}; const fs = td.folderStructure || {}
+    state.tagMatrixByType[type] = {}; state.cityArticleCountByType[type] = {}
+    FORMAT_KEYS.forEach(fmt => {
+      state.tagMatrixByType[type][fmt] = {}; state.cityArticleCountByType[type][fmt] = {}
+      TEMPLATE_CITIES.forEach(c => { state.tagMatrixByType[type][fmt][c] = {}; state.cityArticleCountByType[type][fmt][c] = 0; KEYWORDS.forEach(k => state.tagMatrixByType[type][fmt][c][k.word] = 0) })
+      const files = fs[fmt] || []
+      const usedSet = state.usedArticlesByType[type] || new Set()
+      for (const f of files) {
+        if (usedSet.has(f.name)) continue
+        const mc = f.city
+        if (mc) { state.cityArticleCountByType[type][fmt][mc]++; for (const kw of f.keywords) state.tagMatrixByType[type][fmt][mc][kw]++ }
+      }
+    })
+  }
+}
+function renderHeatmap() {
+  const el = document.getElementById('heatmapContent')
+  if (!state.uploaded) { el.innerHTML = '<div class="empty-state"><span class="icon">📁</span><p>请先上传文件夹</p></div>'; return }
+  const curFmt = state._heatmapFormat || 'docx', curType = state._heatmapType || '全部'
+  el.innerHTML = '<div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">类型：' +
+    ['全部', ...state.types].map(t => '<button class="btn ' + (t === curType ? 'btn-primary' : 'btn-outline') + '" onclick="switchHeatmapType(\'' + t + '\')">' + t + '</button>').join('') +
+    '</div><div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">格式：' +
+    FORMAT_KEYS.map(f => '<button class="btn ' + (f === curFmt ? 'btn-primary' : 'btn-outline') + '" onclick="switchHeatmapFmt(\'' + f + '\')">' + PLATFORM_CONFIG[f].icon + ' ' + PLATFORM_CONFIG[f].label + '</button>').join('') + '</div>'
+  el.appendChild(buildHeatmapLegend()); el.appendChild(buildHeatmapTableElement(curFmt, curType))
+}
+function switchHeatmapType(t) { state._heatmapType = t; renderHeatmap() }
+function switchHeatmapFmt(f) { state._heatmapFormat = f; renderHeatmap() }
+function buildHeatmapLegend() {
+  const d = document.createElement('div'); d.className = 'heatmap-legend'
+  d.innerHTML = '<span style="font-size:13px;font-weight:600">图例：</span><div class="heatmap-legend-item"><div class="heatmap-legend-dot" style="background:#22c55e"></div> 关键词充裕(&ge;10)</div><div class="heatmap-legend-item"><div class="heatmap-legend-dot" style="background:#eab308"></div> 关键词临界(3~9)</div><div class="heatmap-legend-item"><div class="heatmap-legend-dot" style="background:#ef4444"></div> 关键词不足(0~2)</div><span style="margin:0 8px">|</span><div class="heatmap-legend-item"><div class="heatmap-legend-dot" style="background:#22c55e"></div> 总文章充裕(&ge;100)</div><div class="heatmap-legend-item"><div class="heatmap-legend-dot" style="background:#eab308"></div> 总文章临界(50~99)</div><div class="heatmap-legend-item"><div class="heatmap-legend-dot" style="background:#ef4444"></div> 总文章不足(&lt;50)</div>'
+  return d
+}
+function buildHeatmapTableElement(fmt, type) {
+  const wrap = document.createElement('div'); wrap.className = 'heatmap-wrap'
+  let mx = {}, counts = {}
+  TEMPLATE_CITIES.forEach(c => { mx[c] = {}; counts[c] = 0; KEYWORDS.forEach(k => mx[c][k.word] = 0) })
+  if (type === '全部') {
+    for (const t of state.types) {
+      const tmx = ((state.tagMatrixByType[t] || {})[fmt]) || {}; const tc = ((state.cityArticleCountByType[t] || {})[fmt]) || {}
+      for (const c of TEMPLATE_CITIES) { counts[c] += tc[c] || 0; for (const k of KEYWORDS) mx[c][k.word] += ((tmx[c] || {})[k.word]) || 0 }
+    }
+  } else {
+    const tmx = ((state.tagMatrixByType[type] || {})[fmt]) || {}; const tc = ((state.cityArticleCountByType[type] || {})[fmt]) || {}
+    for (const c of TEMPLATE_CITIES) { counts[c] = tc[c] || 0; for (const k of KEYWORDS) mx[c][k.word] = ((tmx[c] || {})[k.word]) || 0 }
+  }
+  const kw = KEYWORDS.map(k => k.word)
+  let h = '<table class="heatmap-table"><thead><tr><th style="min-width:60px">城市</th><th style="min-width:80px;background:linear-gradient(135deg,#4f46e5,#818cf8);color:#fff;font-size:13px;letter-spacing:1px">📊 总文章</th>' + kw.map(k => '<th>' + k + '</th>').join('') + '</tr></thead><tbody>'
+  TEMPLATE_CITIES.forEach(c => {
+    h += '<tr><td>' + c + '</td>'
+    const total = counts[c] || 0
+    const totalClr = total >= 100 ? '#22c55e' : total >= 50 ? '#eab308' : '#ef4444'
+    h += '<td style="background:' + totalClr + '15;color:' + totalClr + ';font-weight:900;font-size:14px;border-right:4px solid #cbd5e1">' + total + '</td>'
+    kw.forEach(k => { const n = mx[c][k] || 0; const clr = n >= 10 ? '#22c55e' : n >= 3 ? '#eab308' : '#ef4444'; h += '<td style="background:' + clr + '20;color:' + clr + ';font-weight:' + (n < 3 ? '700' : '600') + '">' + n + '</td>' })
+    h += '</tr>'
+  })
+  h += '</tbody></table>'; wrap.innerHTML = h; return wrap
+}
+
+// ==================== 生成筛选页面 ====================
+function changeFilterType(format, type) { state.filters[format].activeType = type; updateFilterPage(format); saveFiltersToCloud() }
+function generateFilterPages() {
+  FORMAT_KEYS.forEach(fmt => {
+    const cfg = PLATFORM_CONFIG[fmt]
+    const page = document.createElement('div'); page.className = 'page'; page.id = 'page-' + fmt
+    const filter = state.filters[fmt]
+    page.innerHTML = '<div class="page-header"><div class="page-title">' + cfg.icon + ' ' + cfg.label + '</div>' +
+      '<div class="page-desc" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+      '<span>格式: <strong>' + cfg.ext.toUpperCase() + '</strong></span><span>·</span>' +
+      '<span>可用: <strong id="avail-' + fmt + '">0</strong> 篇</span><span>·</span>' +
+      '<span>已导出: <strong id="used-' + fmt + '">0</strong> 篇</span></div></div>' +
+      '<div class="card"><div class="card-title">🏷️ 选择筛选类型</div><div class="card-sub">选择要筛选哪个类型的文章</div>' +
+      '<select class="type-selector" data-format="' + fmt + '" onchange="changeFilterType(\'' + fmt + '\',this.value)" style="width:100%;padding:10px 14px;border:2px solid var(--border);border-radius:8px;font-size:14px;outline:none">' +
+      state.types.map(t => '<option value="' + t + '" ' + (t === (filter.activeType || '提示词一') ? 'selected' : '') + '>' + t + '</option>').join('') +
+      '</select></div>' +
+      '<div class="card"><div class="card-title"><span style="background:var(--primary);color:#fff;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;margin-right:4px">1</span> 设置城市及筛选数量</div>' +
+      '<div class="card-sub">选择筛选模式，为各城市设置需要筛选的文章数量</div>' +
+      '<div style="display:flex;gap:10px;margin-bottom:16px"><button class="btn ' + (filter.filterMode === 'free' ? 'btn-primary' : 'btn-outline') + '" onclick="setFilterMode(\'' + fmt + '\',\'free\')" id="modeFree-' + fmt + '">✏️ 自由筛选</button>' +
+      '<button class="btn ' + (filter.filterMode === 'template' ? 'btn-primary' : 'btn-outline') + '" onclick="setFilterMode(\'' + fmt + '\',\'template\')" id="modeTpl-' + fmt + '">📋 模板筛选</button></div>' +
+      '<div id="freeMode-' + fmt + '" class="' + (filter.filterMode === 'free' ? '' : 'hidden') + '"><div class="city-list" id="cityList-' + fmt + '"></div>' +
+      '<div class="preset-row"><span class="preset-label">快捷预设：</span>' +
+      '<button class="btn btn-sm btn-outline" onclick="presetCities(\'' + fmt + '\',[\'北京\',\'上海\',\'广州\',\'深圳\'])">一线城市</button>' +
+      '<button class="btn btn-sm btn-outline" onclick="presetCities(\'' + fmt + '\',[\'成都\',\'重庆\',\'武汉\',\'西安\',\'杭州\',\'南京\',\'天津\'])">新一线</button>' +
+      '<button class="btn btn-sm btn-outline" onclick="presetCities(\'' + fmt + '\',[\'北京\',\'上海\',\'广州\',\'深圳\',\'成都\',\'杭州\',\'武汉\',\'南京\',\'西安\',\'重庆\',\'天津\',\'苏州\'])">主要城市</button></div>' +
+      '<div class="btn-group"><button class="btn btn-sm btn-outline" onclick="addCity(\'' + fmt + '\')">＋ 添加城市</button></div></div>' +
+      '<div id="tplMode-' + fmt + '" class="' + (filter.filterMode === 'template' ? '' : 'hidden') + '">' +
+      '<div style="margin-bottom:10px;font-size:13px;color:var(--text-muted)">已预设城市，填写数量即可（为0则不筛选）</div>' +
+      '<div class="city-list" id="tplCityList-' + fmt + '"></div></div>' +
+      '<div class="btn-group"><button class="btn btn-sm btn-success" onclick="showSaveTemplateDialog(\'' + fmt + '\')">💾 保存为模板</button></div>' +
+      '<div id="templateList-' + fmt + '" style="margin-top:12px"></div></div>' +
+      '<div class="card"><div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">' +
+      '<span><span style="background:#d97706;color:#fff;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;margin-right:4px">2</span> 标题关键词筛选（可选）</span>' +
+      '<label style="display:flex;align-items:center;gap:8px;cursor:pointer"><span style="color:var(--text-muted);font-size:13px" id="titleToggleLabel-' + fmt + '">' + (filter.titleFilterOn ? '已开启' : '未开启') + '</span>' +
+      '<div style="position:relative;width:44px;height:24px;background:' + (filter.titleFilterOn ? 'var(--primary)' : 'var(--border)') + ';border-radius:12px;cursor:pointer" id="toggleTitle-' + fmt + '" onclick="toggleTitleFilter(\'' + fmt + '\')">' +
+      '<div style="position:absolute;top:2px;left:' + (filter.titleFilterOn ? '22px' : '2px') + ';width:20px;height:20px;background:#fff;border-radius:50%"></div></div></label></div>' +
+      '<div id="titleFilterSection-' + fmt + '" class="' + (filter.titleFilterOn ? '' : 'hidden') + '">' +
+      '<div class="card-sub">按关键词占比进行"85%贪心+15%随机"混合筛选</div>' +
+      '<div style="background:#f8fafc;border-radius:10px;padding:14px;border:1px solid var(--border);margin-bottom:12px">' +
+      '<div style="font-size:13px;font-weight:600;margin-bottom:8px">📊 24个关键词占比表</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px">' +
+      KEYWORDS.map(k => '<div style="font-size:12px;padding:4px 8px;background:#fff;border-radius:6px;border:1px solid var(--border)"><span style="font-weight:600">' + k.word + '</span><span style="color:var(--text-muted)"> ' + k.pct + '%</span></div>').join('') +
+      '</div></div></div></div>' +
+      '<div class="card"><div class="card-title">📋 预览 & 导出</div>' +
+      '<div id="preview-' + fmt + '"><div class="empty-state"><span class="icon">🔍</span><p>设置城市和数量后生成预览</p></div></div>' +
+      '<div class="stats hidden" id="stats-' + fmt + '"></div>' +
+      '<div id="keywordStats-' + fmt + '" class="hidden" style="margin-top:16px"></div>' +
+      '<div class="btn-group"><button class="btn btn-primary" onclick="genPreview(\'' + fmt + '\')">🔄 生成预览</button>' +
+      '<button class="btn btn-success" onclick="exportFormat(\'' + fmt + '\')" id="btnExport-' + fmt + '" disabled>📦 导出 ' + cfg.ext.toUpperCase() + '</button></div>' +
+      '<div class="progress-wrap" id="pw-' + fmt + '"><div class="progress-label"><span id="pt-' + fmt + '">准备...</span><span id="pp-' + fmt + '">0%</span></div><div class="progress-bar"><div class="progress-fill" id="pf-' + fmt + '"></div></div></div>' +
+      '<div class="log-area" id="log-' + fmt + '"></div></div>'
+    document.querySelector('.main').insertBefore(page, document.getElementById('page-overview'))
+  })
+}
+
+// ==================== 切换页面 ====================
+function switchPage(pageId) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'))
+  const target = document.getElementById('page-' + pageId)
+  if (target) target.classList.add('active')
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'))
+  const navItem = document.querySelector('[data-page="' + pageId + '"]')
+  if (navItem) navItem.classList.add('active')
+  currentPage = pageId
+  if (pageId === 'overview') renderOverview()
+  if (pageId === 'heatmap') { if (state.uploaded) renderHeatmap() }
+  if (pageId === 'manage') renderManage()
+  if (FORMAT_KEYS.includes(pageId)) updateFilterPage(pageId)
+}
+
+// ==================== 筛选模式切换 ====================
+function setFilterMode(format, mode) {
+  state.filters[format].filterMode = mode
+  document.getElementById('modeFree-' + format).className = 'btn ' + (mode === 'free' ? 'btn-primary' : 'btn-outline')
+  document.getElementById('modeTpl-' + format).className = 'btn ' + (mode === 'template' ? 'btn-primary' : 'btn-outline')
+  document.getElementById('freeMode-' + format).classList.toggle('hidden', mode !== 'free')
+  document.getElementById('tplMode-' + format).classList.toggle('hidden', mode !== 'template')
+  if (mode === 'template') renderTemplateCityList(format)
+  saveFiltersToCloud()
+  showToast('已切换至' + (mode === 'free' ? '自由筛选' : '模板筛选'), 'info')
+}
+function toggleTitleFilter(format) {
+  state.filters[format].titleFilterOn = !state.filters[format].titleFilterOn
+  const on = state.filters[format].titleFilterOn
+  if (document.getElementById('toggleTitle-' + format)) document.getElementById('toggleTitle-' + format).style.background = on ? 'var(--primary)' : 'var(--border)'
+  if (document.getElementById('titleToggleLabel-' + format)) document.getElementById('titleToggleLabel-' + format).textContent = on ? '已开启' : '未开启'
+  document.getElementById('titleFilterSection-' + format).classList.toggle('hidden', !on)
+  saveFiltersToCloud()
+}
+
+// ==================== 城市管理 ====================
+function addCity(format, name, count) {
+  state.filters[format].cities.push({ id: ++cityIdCounter, name: name || '', count: parseInt(count) || 0 })
+  renderCityList(format)
+}
+function removeCity(format, id) { state.filters[format].cities = state.filters[format].cities.filter(c => c.id !== id); renderCityList(format) }
+function updateCity(format, id, field, value) { const c = state.filters[format].cities.find(x => x.id === id); if (c) c[field] = field === 'count' ? (parseInt(value) || 0) : value }
+function presetCities(format, names) { state.filters[format].cities = []; names.forEach(n => addCity(format, n, 3)); saveFiltersToCloud(); showToast('已预设 ' + names.length + ' 个城市', 'info') }
+function renderCityList(format) {
+  const list = document.getElementById('cityList-' + format); if (!list) return
+  list.innerHTML = state.filters[format].cities.map(c => '<div class="city-item">' +
+    '<input type="text" placeholder="城市名" value="' + c.name + '" onchange="updateCity(\'' + format + '\',' + c.id + ',\'name\',this.value)">' +
+    '<span class="city-label">需</span><input type="number" placeholder="数量" value="' + c.count + '" min="0" onchange="updateCity(\'' + format + '\',' + c.id + ',\'count\',this.value)">' +
+    '<span class="city-label">篇</span><button class="btn-remove-city" onclick="removeCity(\'' + format + '\',' + c.id + ')">×</button></div>').join('')
+}
+function renderTemplateCityList(format) {
+  const list = document.getElementById('tplCityList-' + format); if (!list) return
+  if (!state.filters[format].templateCounts) state.filters[format].templateCounts = {}
+  const counts = state.filters[format].templateCounts
+  list.innerHTML = TEMPLATE_CITIES.map(c => '<div class="city-item"><span style="font-weight:600;font-size:14px;min-width:50px;color:var(--text)">' + c + '</span><span class="city-label">需</span>' +
+    '<input type="number" placeholder="0" value="' + (counts[c] || 0) + '" min="0" onchange="updateTemplateCount(\'' + format + '\',\'' + c + '\',this.value)" class="tpl-input"><span class="city-label">篇</span></div>').join('')
+}
+function updateTemplateCount(format, city, value) { if (!state.filters[format].templateCounts) state.filters[format].templateCounts = {}; state.filters[format].templateCounts[city] = parseInt(value) || 0 }
+function syncFilterModeUI(format) {
+  const mode = state.filters[format].filterMode
+  document.getElementById('modeFree-' + format).className = 'btn ' + (mode === 'free' ? 'btn-primary' : 'btn-outline')
+  document.getElementById('modeTpl-' + format).className = 'btn ' + (mode === 'template' ? 'btn-primary' : 'btn-outline')
+  document.getElementById('freeMode-' + format).classList.toggle('hidden', mode !== 'free')
+  document.getElementById('tplMode-' + format).classList.toggle('hidden', mode !== 'template')
+  if (mode === 'template') renderTemplateCityList(format)
+}
+
+// ==================== 更新筛选页 ====================
+function updateFilterPage(format) {
+  syncFilterModeUI(format); renderTemplateList(format)
+  const availEl = document.getElementById('avail-' + format); const usedEl = document.getElementById('used-' + format)
+  if (!availEl) return
+  const type = state.filters[format].activeType || state.activeType
+  const usedSet = state.usedArticlesByType[type] || new Set()
+  const td = state.typeData[type] || {}
+  const files = (td.folderStructure || {})[format] || []
+  const available = files.filter(f => !usedSet.has(f.name)).length
+  availEl.textContent = available
+  usedEl.textContent = files.length - available
+  updateNavBadges()
+}
+
+// ==================== 更新导航角标 ====================
+function updateNavBadges() {
+  FORMAT_KEYS.forEach(fmt => {
+    let totalAvail = 0
+    state.types.forEach(t => {
+      const usedSet = state.usedArticlesByType[t] || new Set()
+      const td = state.typeData[t] || {}
+      const files = (td.folderStructure || {})[fmt] || []
+      totalAvail += files.filter(f => !usedSet.has(f.name)).length
+    })
+    const badge = document.getElementById('badge-' + fmt)
+    if (badge) badge.textContent = totalAvail
+  })
+}
+
+// ==================== 城市/关键词检测 ====================
+function detectCity(title) {
+  const sorted = [...TEMPLATE_CITIES].sort((a, b) => b.length - a.length)
+  for (const c of sorted) { if (title.includes(c)) return c }
+  for (const [alias, city] of Object.entries(CITY_ALIASES)) { if (title.includes(alias)) return city }
+  return null
+}
+function detectKeywords(title) { const found = []; for (const kw of KEYWORDS) { if (title.includes(kw.word)) found.push(kw.word) } return found }
+function countKeywords(titles) { const counts = {}; KEYWORDS.forEach(k => counts[k.word] = 0); for (const t of titles) { const kws = detectKeywords(t); for (const kw of kws) counts[kw]++ } return counts }
+
+// ==================== 贪心算法 ====================
+function greedyKeywordSelect(allTitles, targetCount, targetCountsMap) {
+  if (targetCount <= 0 || allTitles.length === 0) return []
+  if (targetCount >= allTitles.length) return [...allTitles]
+  const selected = [], remaining = [...allTitles]; const currentCounts = {}
+  KEYWORDS.forEach(k => currentCounts[k.word] = 0)
+  for (let round = 0; round < targetCount; round++) {
+    let bestTitle = null, bestIdx = -1, bestImprovement = -Infinity
+    for (let i = 0; i < remaining.length; i++) {
+      const title = remaining[i]; const kws = detectKeywords(title)
+      let curDev = 0, newDev = 0
+      for (const kw of KEYWORDS) {
+        const target = targetCountsMap[kw.word] || 0, cur = currentCounts[kw.word], add = kws.includes(kw.word) ? 1 : 0
+        curDev += Math.abs(cur - target); newDev += Math.abs(cur + add - target)
+      }
+      const imp = curDev - newDev
+      if (imp > bestImprovement) { bestImprovement = imp; bestTitle = title; bestIdx = i }
+    }
+    if (bestTitle && bestIdx >= 0) { selected.push(bestTitle); for (const kw of detectKeywords(bestTitle)) currentCounts[kw]++; remaining.splice(bestIdx, 1) } else break
+  }
+  return selected
+}
+function buildCityArticleMap(allTitles, validCities, nameToCity) {
+  const map = {}; validCities.forEach(c => map[c.name] = [])
+  for (const title of allTitles) { const city = nameToCity[title]; if (city && map[city]) map[city].push(title) }
+  return map
+}
+function cityKeywordFilter(format, validCities, allAvailableNames, cityArticleMap, useKeywordFilter) {
+  const allSelected = [], allSelectedSet = new Set(), warnings = []
+  for (const city of validCities) {
+    const cityPool = (cityArticleMap[city.name] || []).filter(t => !allSelectedSet.has(t)); const needCount = city.count; let selected
+    if (cityPool.length >= needCount) {
+      selected = useKeywordFilter ? hybridKeywordFilter(cityPool, needCount) : shuffleAndPick(cityPool, needCount)
+    } else {
+      selected = useKeywordFilter ? hybridKeywordFilter(cityPool, cityPool.length) : shuffleAndPick(cityPool, cityPool.length)
+      const shortage = needCount - cityPool.length
+      const borrowPool = allAvailableNames.filter(t => !allSelectedSet.has(t))
+      shuffleArray(borrowPool); const borrowed = borrowPool.slice(0, shortage); selected.push(...borrowed)
+      warnings.push({ city: city.name, message: '文章不足（需' + needCount + '，本地仅' + cityPool.length + '），从其他城市借调 ' + borrowed.length + ' 篇' })
+    }
+    selected.forEach(t => allSelectedSet.add(t)); allSelected.push(...selected)
+  }
+  const totalNeeded = validCities.reduce((s, c) => s + c.count, 0)
+  if (allSelected.length < totalNeeded) {
+    const extra = allAvailableNames.filter(t => !allSelectedSet.has(t))
+    shuffleArray(extra); const add = extra.slice(0, totalNeeded - allSelected.length); allSelected.push(...add)
+    warnings.push({ city: '全局', message: '总文章数不足，额外补充 ' + add.length + ' 篇' })
+  }
+  return { allSelected, warnings }
+}
+function shuffleAndPick(pool, count) { if (count <= 0 || !pool.length) return []; const arr = [...pool]; shuffleArray(arr); return arr.slice(0, Math.min(count, arr.length)) }
+function hybridKeywordFilter(titlePool, totalNeeded) {
+  if (titlePool.length === 0 || totalNeeded <= 0) return []
+  if (totalNeeded >= titlePool.length) return [...titlePool]
+  const greedyCount = Math.round(totalNeeded * 0.85); const targetCounts = {}
+  for (const kw of KEYWORDS) targetCounts[kw.word] = Math.round(greedyCount * kw.pct / 100)
+  const greedySelected = greedyKeywordSelect(titlePool, greedyCount, targetCounts); const selectedSet = new Set(greedySelected); const randomPick = []
+  const pool = [...titlePool]; shuffleArray(pool)
+  for (const t of pool) { if (randomPick.length >= totalNeeded - greedyCount) break; if (!selectedSet.has(t)) { randomPick.push(t); selectedSet.add(t) } }
+  return [...greedySelected, ...randomPick]
+}
+
+// ==================== 生成预览 ====================
+function genPreview(format) {
+  const type = state.filters[format].activeType || state.activeType
+  const usedSet = state.usedArticlesByType[type] || new Set()
+  const td = state.typeData[type] || {}
+  const files = ((td.folderStructure || {})[format] || []).filter(f => !usedSet.has(f.name))
+  const availableNames = [...new Set(files.map(f => f.name))]
+  if (!availableNames.length) { showToast('没有可用的文章','error'); return }
+  let validCities
+  if (state.filters[format].filterMode === 'template') {
+    const counts = state.filters[format].templateCounts || {}
+    validCities = TEMPLATE_CITIES.filter(c => counts[c] > 0).map(c => ({ name: c, count: counts[c] }))
+    if (!validCities.length) { showToast('请设置城市数量 > 0','error'); return }
+  } else {
+    validCities = state.filters[format].cities.filter(c => c.name.trim() && c.count > 0)
+    if (!validCities.length) { showToast('请至少设置一个城市','error'); return }
+  }
+  const totalNeeded = validCities.reduce((s, c) => s + c.count, 0)
+  if (availableNames.length < totalNeeded) { showToast('文章不足！需要' + totalNeeded + '篇，可用' + availableNames.length + '篇','error'); return }
+  let allSelectedNames = [], warnings = []
+  const nameToCity = {}; files.forEach(f => { nameToCity[f.name] = f.city })
+  const cityMap = buildCityArticleMap(availableNames, validCities, nameToCity)
+  if (state.filters[format].titleFilterOn) {
+    showToast('正在进行标题关键词优化筛选...','info')
+    const result = cityKeywordFilter(format, validCities, availableNames, cityMap, true)
+    allSelectedNames = result.allSelected; warnings = result.warnings
+  } else {
+    const result = cityKeywordFilter(format, validCities, availableNames, cityMap, false)
+    allSelectedNames = result.allSelected; warnings = result.warnings
+  }
+  const assignments = []; let idx = 0
+  validCities.forEach(city => {
+    const list = []; for (let i = 0; i < city.count && idx < allSelectedNames.length; i++) list.push(allSelectedNames[idx++])
+    assignments.push({ city: city.name, count: city.count, articles: list, warnings: warnings.filter(w => w.city === city.name) })
+  })
+  state.filters[format].preview = { assignments, remaining: availableNames.length - idx }
+  renderFilterPreview(format, assignments); renderFilterStats(format, validCities, assignments); renderWarnings(format, warnings)
+  if (state.filters[format].titleFilterOn) renderKeywordStats(format, allSelectedNames, totalNeeded)
+  else { const ks = document.getElementById('keywordStats-' + format); if (ks) ks.classList.add('hidden') }
+  document.getElementById('btnExport-' + format).disabled = false
+  showToast('预览生成成功 ✅','success')
+}
+function renderFilterPreview(format, assignments) {
+  const c = document.getElementById('preview-' + format)
+  if (!assignments.length) { c.innerHTML = '<div class="empty-state"><span class="icon">📭</span><p>无数据</p></div>'; return }
+  let total = 0; assignments.forEach(a => total += a.articles.length)
+  c.innerHTML = '<div class="table-wrap" style="max-height:400px;overflow-y:auto"><table><thead><tr><th style="width:100px">城市</th><th style="width:70px">数量</th><th>分配的文章</th></tr></thead><tbody>' +
+    assignments.map(a => {
+      const isLong = a.articles.length > 5; const display = isLong ? a.articles.slice(0, 5) : a.articles
+      const warn = a.warnings && a.warnings.length ? '<span style="color:var(--warning);font-size:11px;display:block">⚠️ ' + a.warnings[0].message + '</span>' : ''
+      return '<tr><td style="font-weight:600;color:var(--primary)">' + a.city + warn + '</td><td><span class="badge-num">' + a.articles.length + '</span></td><td><div class="article-name" id="articles-' + format + '-' + a.city + '">' + display.join('<br>') +
+        (isLong ? '<div style="margin-top:6px"><button class="btn btn-sm btn-outline" onclick="toggleArticles(\'' + format + '\',\'' + a.city + '\',this)" data-full="' + a.articles.join('&#10;') + '">展开剩余 ' + (a.articles.length - 5) + ' 篇 ▼</button></div>' : '') + '</div></td></tr>'
+    }).join('') + '</tbody></table></div><div style="margin-top:10px;text-align:right;font-size:13px;color:var(--text-muted)">共 <strong>' + total + '</strong> 篇文章</div>'
+}
+function toggleArticles(format, city, btn) {
+  const container = document.getElementById('articles-' + format + '-' + city)
+  const full = btn.dataset.full
+  if (btn.dataset.expanded !== 'true') {
+    container.innerHTML = full.replace(/\n/g, '<br>') + '<div style="margin-top:6px"><button class="btn btn-sm btn-outline" onclick="toggleArticles(\'' + format + '\',\'' + city + '\',this)" data-full="' + full + '" data-expanded="true">收起 ▲</button></div>'
+  } else {
+    const articles = full.split('\n')
+    container.innerHTML = articles.slice(0, 5).join('<br>') + '<div style="margin-top:6px"><button class="btn btn-sm btn-outline" onclick="toggleArticles(\'' + format + '\',\'' + city + '\',this)" data-full="' + full + '">展开剩余 ' + (articles.length - 5) + ' 篇 ▼</button></div>'
+  }
+}
+function renderFilterStats(format, cities, assignments) {
+  const s = document.getElementById('stats-' + format); if (!s) return
+  const totalA = assignments.reduce((s, a) => s + a.articles.length, 0)
+  s.classList.remove('hidden'); s.innerHTML = '<div class="stat-item"><div class="val">' + cities.length + '</div><div class="lbl">城市数</div></div><div class="stat-item"><div class="val">' + totalA + '</div><div class="lbl">文章数</div></div><div class="stat-item"><div class="val">' + totalA + '</div><div class="lbl">导出文件数</div></div>'
+}
+function renderWarnings(format, warnings) {
+  const old = document.getElementById('warnings-' + format); if (old) old.remove()
+  if (!warnings.length) return
+  const card = document.getElementById('preview-' + format).closest('.card'); if (!card) return
+  const div = document.createElement('div'); div.id = 'warnings-' + format; div.style.marginTop = '12px'
+  div.innerHTML = warnings.map(w => '<div style="padding:8px 12px;background:#fef3c7;border-radius:8px;border:1px solid #fbbf24;font-size:13px;margin-bottom:6px">⚠️ ' + w.message + '</div>').join('')
+  card.appendChild(div)
+}
+function renderKeywordStats(format, finalTitles, totalNeeded) {
+  const container = document.getElementById('keywordStats-' + format); if (!container) return
+  container.classList.remove('hidden')
+  const actual = countKeywords(finalTitles); const greedyCount = Math.round(totalNeeded * 0.85); const targets = {}
+  for (const kw of KEYWORDS) targets[kw.word] = Math.round(greedyCount * kw.pct / 100)
+  let totalDev = 0, maxOver = '', maxUnder = '', maxOverVal = -Infinity, maxUnderVal = Infinity, rows = ''
+  for (const kw of KEYWORDS) { const a = actual[kw.word] || 0, t = targets[kw.word] || 0, d = a - t; totalDev += Math.abs(d); if (d > maxOverVal) { maxOverVal = d; maxOver = kw.word }; if (d < maxUnderVal) { maxUnderVal = d; maxUnder = kw.word }; rows += '<tr><td style="font-weight:600">' + kw.word + '</td><td style="text-align:center">' + a + '</td><td style="text-align:center">' + t + '</td><td style="text-align:center">' + (d > 0 ? '+' : '') + d + '</td></tr>' }
+  const avg = totalDev / KEYWORDS.length; let ev = avg < 0.5 ? '✅ 整体偏差非常小' : avg < 1 ? '👍 整体偏差较小' : avg < 2 ? '⚠️ 整体偏差中等' : '🔴 整体偏差较大'
+  if (maxOver) ev += '<br>偏多最多的词：<strong>' + maxOver + '</strong>（+' + maxOverVal + '）'
+  if (maxUnder) ev += '<br>偏少最多的词：<strong>' + maxUnder + '</strong>（' + maxUnderVal + '）'
+  const warns = []; for (const kw of KEYWORDS) { const a = actual[kw.word] || 0, t = targets[kw.word] || 0; if (a < t * 0.5) warns.push(kw.word + '（实际' + a + '，目标' + t + '）') }
+  container.innerHTML = '<div class="card" style="margin-top:0;padding:16px;background:linear-gradient(135deg,#f8fafc,#f1f5f9)"><div class="card-title" style="font-size:15px">📊 关键词统计对比表</div>' +
+    '<div style="font-size:13px;margin-bottom:12px;color:var(--text-muted)">总文章数: <strong>' + finalTitles.length + '</strong> 篇 · 贪心: <strong>' + greedyCount + '</strong> 篇 · 随机: <strong>' + (totalNeeded - greedyCount) + '</strong> 篇</div>' +
+    '<div class="table-wrap" style="max-height:400px;overflow-y:auto"><table class="preview-table"><thead><tr><th>关键词</th><th style="text-align:center">实际</th><th style="text-align:center">目标</th><th style="text-align:center">偏差</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div style="margin-top:12px;padding:12px;background:#fff;border-radius:8px;border:1px solid var(--border);font-size:13px"><div style="font-weight:600;margin-bottom:4px">📝 评价</div>' + ev +
+    (warns.length ? '<div style="margin-top:8px;color:var(--danger)">⚠️ 以下关键词库存严重不足：' + warns.join('；') + '</div>' : '') + '</div></div>'
+}
+function shuffleArray(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]] } }
+
+// ==================== 导出 ====================
+async function exportFormat(format) {
+  const pData = state.filters[format].preview
+  if (!pData) { showToast('请先生成预览','error'); return }
+  const cfg = PLATFORM_CONFIG[format]
+  const type = state.filters[format].activeType || state.activeType
+  const usedSet = state.usedArticlesByType[type] || new Set()
+  const assignedNames = new Set()
+  pData.assignments.forEach(a => a.articles.forEach(n => assignedNames.add(n)))
+  const td = state.typeData[type] || {}
+  const sourceFiles = (td.folderStructure || {})[format] || []
+  const toExport = sourceFiles.filter(f => assignedNames.has(f.name) && !usedSet.has(f.name))
+  if (!toExport.length) { showToast('没有需要导出的文件','error'); return }
+  showProgress(format, true)
+  log(format, '开始导出「' + cfg.label + '」(' + cfg.ext.toUpperCase() + ')...\n','info')
+  const zip = new JSZip(); let processed = 0
+  log(format, '共 ' + toExport.length + ' 个文件\n','info')
+  for (const a of pData.assignments) {
+    log(format, '\n━━━ ' + a.city + ' (' + a.articles.length + '篇) ━━━\n','info')
+    for (const art of a.articles) {
+      for (const m of sourceFiles.filter(f => f.name === art && !usedSet.has(f.name))) {
+        try {
+          let fileContent
+          if (m.storage_path) {
+            fileContent = await downloadFromStorage(m.storage_path)
+          } else if (m.file) {
+            fileContent = await readFile(m.file)
+          } else {
+            log(format, '  ⚠ ' + m.fullName + ': 文件不可用（请重新上传）\n','warn'); continue
+          }
+          zip.file(m.fullName, fileContent)
+          log(format, '  ✓ ' + m.fullName + '\n','success')
+          processed++
+          updateProgress(format, processed, toExport.length, m.fullName)
+          if (processed % 15 === 0) await sleep(0)
+        } catch(e) { log(format, '  ✗ ' + m.fullName + ': ' + e.message + '\n','error') }
+      }
+    }
+  }
+  log(format, '\n正在打包...\n','info')
+  try {
+    const blob = await zip.generateAsync({ type:'blob', compression:'DEFLATE', compressionOptions:{ level:6 } },
+      meta => updateProgress(format, processed, toExport.length, '打包 ' + Math.round(meta.percent) + '%'))
+    downloadBlob(blob, cfg.label + '_' + cfg.ext + '_' + new Date().toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).replace(/[/:]/g,'-') + '.zip')
+    completeProgress(format)
+    log(format, '\n✅ 导出成功！' + processed + ' 个文件\n','success')
+    showToast('「' + cfg.label + '」导出成功!','success')
+    assignedNames.forEach(n => usedSet.add(n))
+    await saveUsedToCloud()
+    saveStateToStorage(); updateFilterPage(format); updateNavBadges(); renderOverview()
+    buildTagMatrix(); renderHeatmap()
+  } catch(e) { log(format, '\n❌ 失败: ' + e.message + '\n','error'); showToast('导出失败','error'); showProgress(format, false) }
+}
+function readFile(f) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(); r.readAsArrayBuffer(f) }) }
+function downloadBlob(b, name) { const u = URL.createObjectURL(b), a = document.createElement('a'); a.href = u; a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(u) }, 100) }
+
+// ==================== 管理页面 ====================
+function renderManage() {
+  const c = document.getElementById('manageContent'); const tab = state._manageTab || 'types'
+  c.innerHTML =
+    '<div style="display:flex;gap:4px;margin-bottom:20px;flex-wrap:wrap">' +
+    '<button class="btn ' + (tab === 'types' ? 'btn-primary' : 'btn-outline') + '" onclick="switchManageTab(\'types\')">🏷️ 类型管理</button>' +
+    '<button class="btn ' + (tab === 'templates' ? 'btn-primary' : 'btn-outline') + '" onclick="switchManageTab(\'templates\')">📋 模板管理</button>' +
+    '<button class="btn ' + (tab === 'used' ? 'btn-primary' : 'btn-outline') + '" onclick="switchManageTab(\'used\')">🔄 已用文章</button></div>' +
+    '<div id="manageSubContent"></div>'; renderManageTab(tab)
+}
+function switchManageTab(tab) { state._manageTab = tab; renderManage(); syncToCloud() }
+function renderManageTab(tab) {
+  const el = document.getElementById('manageSubContent')
+  if (!state.uploaded && !state.types.length) { el.innerHTML = '<div class="empty-state"><span class="icon">📁</span><p>请先上传文件夹</p></div>'; return }
+  if (tab === 'types') {
+    el.innerHTML = '<div class="card"><div class="card-title">🏷️ 类型管理</div>' +
+      '<div style="display:flex;gap:8px;margin-bottom:12px"><input type="text" id="newTypeInput" placeholder="输入新类型名称" style="flex:1;padding:9px 12px;border:2px solid var(--border);border-radius:8px;font-size:14px;outline:none">' +
+      '<button class="btn btn-primary" onclick="addType(document.getElementById(\'newTypeInput\').value);document.getElementById(\'newTypeInput\').value=\'\'">创建</button></div>' +
+      state.types.map(t => '<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#f8fafc;border-radius:8px;border:1px solid var(--border);margin-bottom:6px">' +
+      '<span style="flex:1;font-weight:600">🏷️ ' + t + '</span>' +
+      '<button class="btn btn-sm btn-outline" onclick="renameType(\'' + t + '\',prompt(\'新名称：\',\'' + t + '\'))">重命名</button>' +
+      '<button class="btn btn-sm btn-danger" onclick="if(confirm(\'确认删除？\'))removeType(\'' + t + '\')">删除</button></div>').join('') + '</div>'
+  } else if (tab === 'templates') {
+    let h = '<div class="card"><div class="card-title">📋 模板管理</div>'
+    FORMAT_KEYS.forEach(fmt => {
+      h += '<div style="margin-bottom:12px"><div style="font-weight:600;font-size:14px;margin-bottom:6px">' + PLATFORM_CONFIG[fmt].icon + ' ' + PLATFORM_CONFIG[fmt].label + '</div>'
+      const list = state.templates[fmt]
+      if (!list.length) h += '<div style="font-size:13px;color:var(--text-muted)">暂无模板</div>'
+      else h += list.map(t => '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:#fff;border-radius:6px;border:1px solid var(--border);margin-bottom:4px">' +
+        '<span style="flex:1;font-size:13px">📋 ' + t.name + '</span><button class="btn btn-sm btn-outline" onclick="if(confirm(\'确认删除？\'))deleteTemplate(\'' + fmt + '\',\'' + t.name + '\')">删除</button></div>').join('')
+      h += '</div>'
+    }); h += '</div>'; el.innerHTML = h
+  } else if (tab === 'used') {
+    let h = '<div class="card"><div class="card-title">🔄 已用文章管理</div>'
+    state.types.forEach(t => {
+      const usedSet = state.usedArticlesByType[t] || new Set()
+      h += '<div style="margin-bottom:10px"><div style="font-weight:600;font-size:14px;margin-bottom:4px">' + t + '（已用 ' + usedSet.size + ' 篇）</div>'
+      if (usedSet.size > 0) {
+        h += '<div style="max-height:150px;overflow-y:auto;font-size:12px;color:var(--text-muted);line-height:1.8;background:#f8fafc;padding:8px 12px;border-radius:8px;border:1px solid var(--border)">'
+        usedSet.forEach(title => h += title + '<br>')
+        h += '</div><button class="btn btn-sm btn-danger" style="margin-top:6px" onclick="clearUsedArticles(\'' + t + '\')">清空记录</button>'
+      } else h += '<div style="font-size:12px;color:var(--text-muted)">暂无导出记录</div>'
+      h += '</div>'
+    }); h += '</div>'; el.innerHTML = h
+  }
+}
+async function clearUsedArticles(type) {
+  if (!confirm('确认清空「' + type + '」的所有已用记录？')) return
+  state.usedArticlesByType[type] = new Set()
+  await saveUsedToCloud(); renderManage(); updateNavBadges()
+  FORMAT_KEYS.forEach(f => updateFilterPage(f)); renderOverview()
+  buildTagMatrix(); renderHeatmap()
+  showToast('已清空「' + type + '」的已用记录','info')
+}
+
+// ==================== 总览 ====================
+function renderOverview() {
+  const c = document.getElementById('overviewContent')
+  if (!state.uploaded) { c.innerHTML = '<div class="empty-state"><span class="icon">📁</span><p>请先上传文件夹</p></div>'; return }
+  let html = '<div class="overview-grid">'
+  FORMAT_KEYS.forEach(fmt => {
+    const cfg = PLATFORM_CONFIG[fmt]; let total = 0, avail = 0
+    state.types.forEach(t => {
+      const td = state.typeData[t] || {}; const files = (td.folderStructure || {})[fmt] || []; total += files.length
+      const usedSet = state.usedArticlesByType[t] || new Set(); avail += files.filter(f => !usedSet.has(f.name)).length
+    })
+    const used = total - avail, pct = total ? Math.round(used / total * 100) : 0
+    html += '<div class="platform-card" onclick="switchPage(\'' + fmt + '\')" style="cursor:pointer"><div class="h">' + cfg.icon + ' ' + cfg.label + ' <span style="font-size:11px;color:var(--text-muted);font-weight:400">(' + cfg.ext.toUpperCase() + ')</span></div>' +
+      '<div class="info"><strong>' + total + '</strong> 篇 · 可用 <strong>' + avail + '</strong> 篇 · 已导 <strong>' + used + '</strong> 篇</div>' +
+      '<div style="margin-top:8px;height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:linear-gradient(90deg,var(--success),var(--primary));border-radius:3px"></div></div></div>'
+  })
+  html += '</div><div class="card" style="margin-top:16px"><div class="card-title">📋 各类型已用文章统计</div>'
+  state.types.forEach(t => { const usedSet = state.usedArticlesByType[t] || new Set(); html += '<div style="font-size:13px;margin-bottom:4px">' + t + '：<strong>' + usedSet.size + '</strong> 篇已导出</div>' })
+  html += '</div>'; c.innerHTML = html
+}
+
+// ==================== 存储 ====================
+function saveStateToStorage() {
+  // 不再使用 localStorage，数据已同步到云
+}
+function loadStateFromStorage() {}
+
+// ==================== 工具函数 ====================
+function showProgress(format, s) { document.getElementById('pw-' + format).classList.toggle('visible', s) }
+function updateProgress(format, cur, total, text) { const p = Math.round((cur / Math.max(total, 1)) * 100); document.getElementById('pf-' + format).style.width = p + '%'; document.getElementById('pp-' + format).textContent = p + '%'; document.getElementById('pt-' + format).textContent = text || cur + '/' + total }
+function completeProgress(format) { document.getElementById('pf-' + format).classList.add('complete'); document.getElementById('pt-' + format).textContent = '完成!'; document.getElementById('pp-' + format).textContent = '100%' }
+function log(format, msg, lvl) {
+  const a = document.getElementById('log-' + format); if (!a) return; a.classList.add('visible')
+  a.innerHTML += '<span class="' + ({success:'log-success',warn:'log-warn',error:'log-error'}[lvl]||'log-info') + '">' + msg.replace(/</g,'&lt;') + '</span>'; a.scrollTop = a.scrollHeight
+}
+function showToast(msg, type) {
+  const t = document.getElementById('toast'); t.textContent = msg; t.className = 'toast ' + (type || 'info') + ' show'
+  clearTimeout(t._timer); t._timer = setTimeout(() => t.className = 'toast', 3000)
+}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
+
+init()
+</script>
+</body>
+</html>
