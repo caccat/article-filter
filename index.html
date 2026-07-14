@@ -153,6 +153,32 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
         <div class="desc">文章集合 / docx / 标题.docx · excel / 标题.xlsx · ptxt / 标题.ptxt · txt / 标题.txt</div>
         <button class="btn btn-primary" style="margin-top:16px" onclick="event.stopPropagation();triggerFolderInput()">选择文件夹</button>
       </div>
+      <div class="upload-progress-panel" id="uploadProgressPanel" style="display:none">
+        <div class="card" style="border:2px solid var(--primary)">
+          <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+            <span>⏳ 正在上传...</span>
+            <span style="font-size:13px;font-weight:400;color:var(--text-muted)" id="uploadSpeed">-</span>
+          </div>
+          <div style="margin-bottom:8px">
+            <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:4px">
+              <span id="uploadProgressText">准备中...</span>
+              <span id="uploadProgressPct">0%</span>
+            </div>
+            <div class="progress-bar" style="height:10px"><div class="progress-fill" id="uploadProgressFill" style="width:0%"></div></div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+            <span style="font-size:12px;color:var(--text-muted)">📊 已分析: <strong id="uploadAnalyzed">-</strong> 篇文章</span>
+            <span style="font-size:12px;color:var(--text-muted)">|</span>
+            <span style="font-size:12px;color:var(--text-muted)">⏱ 预计剩余: <strong id="uploadETA">-</strong></span>
+          </div>
+          <div id="uploadControlBtns" style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-sm btn-warning" id="btnPauseUpload" onclick="pauseUpload()" style="background:#eab308;color:#fff;border-color:#eab308">⏸ 暂停上传</button>
+            <button class="btn btn-sm btn-outline" id="btnResumeUpload" onclick="resumeUpload()" style="display:none">▶ 继续上传</button>
+            <button class="btn btn-sm btn-danger" onclick="cancelUpload()">✕ 取消上传</button>
+          </div>
+          <div id="uploadPausedNotice" style="display:none;padding:8px 12px;background:#fef3c7;border-radius:8px;border:1px solid #fbbf24;font-size:13px;margin-top:8px">⏸ 上传已暂停，页面刷新不会丢失进度</div>
+        </div>
+      </div>
       <div class="upload-success" id="uploadSuccess">
         <div style="font-size:16px;font-weight:600;color:var(--success)">✅ 上传成功</div>
         <div class="upload-stats">
@@ -564,9 +590,81 @@ async function deleteTemplate(format, name) {
 async function init() {
   await initCloud()
   setupDragDrop()
+  setupBeforeUnload()
   generateFilterPages()
   FORMAT_KEYS.forEach(f => { addCity(f); renderTemplateCityList(f); renderTemplateList(f) })
   updateNavBadges(); renderManage()
+}
+
+// ==================== 上传状态管理 ====================
+let uploadState = {
+  running: false, paused: false, cancelled: false,
+  total: 0, uploaded: 0, failCount: 0,
+  startTime: 0, uploadId: '', processedFiles: null,
+  files: null, structure: null, nameSet: null, fileCounts: null, samplePath: null, isRootDir: false,
+  currentBatch: []
+}
+
+function resetUploadState() {
+  uploadState = {
+    running: false, paused: false, cancelled: false,
+    total: 0, uploaded: 0, failCount: 0,
+    startTime: 0, uploadId: '', processedFiles: null,
+    files: null, structure: null, nameSet: null, fileCounts: null, samplePath: null, isRootDir: false,
+    currentBatch: []
+  }
+}
+
+function setupBeforeUnload() {
+  window.addEventListener('beforeunload', (e) => {
+    if (uploadState.running && !uploadState.cancelled) {
+      e.preventDefault()
+      e.returnValue = '上传正在进行中，离开页面将中断上传。建议先暂停上传。'
+      return e.returnValue
+    }
+  })
+}
+
+function formatETA(seconds) {
+  if (seconds < 60) return Math.ceil(seconds) + ' 秒'
+  if (seconds < 3600) return Math.ceil(seconds / 60) + ' 分钟'
+  return Math.floor(seconds / 3600) + ' 小时 ' + Math.ceil((seconds % 3600) / 60) + ' 分钟'
+}
+
+function updateUploadProgress() {
+  const total = uploadState.total
+  const uploaded = uploadState.uploaded
+  const pct = total ? Math.round(uploaded / total * 100) : 0
+  document.getElementById('uploadProgressFill').style.width = pct + '%'
+  document.getElementById('uploadProgressPct').textContent = pct + '%'
+  document.getElementById('uploadProgressText').textContent = uploaded + ' / ' + total + ' 个文件'
+  
+  // 计算速度和预计时间
+  const elapsed = (Date.now() - uploadState.startTime) / 1000
+  const speed = elapsed > 0 ? Math.round(uploaded / elapsed) : 0
+  const remaining = speed > 0 ? Math.ceil((total - uploaded) / speed) : 0
+  document.getElementById('uploadSpeed').textContent = speed + ' 文件/秒'
+  document.getElementById('uploadETA').textContent = formatETA(remaining)
+}
+
+function showUploadPanel() {
+  document.getElementById('uploadZone').style.display = 'none'
+  document.getElementById('uploadProgressPanel').style.display = 'block'
+  document.getElementById('uploadSuccess').classList.remove('visible')
+  document.getElementById('uploadProgressFill').style.width = '0%'
+  document.getElementById('uploadProgressPct').textContent = '0%'
+  document.getElementById('uploadProgressText').textContent = '准备中...'
+  document.getElementById('uploadSpeed').textContent = '-'
+  document.getElementById('uploadETA').textContent = '-'
+  document.getElementById('uploadAnalyzed').textContent = '-'
+  document.getElementById('btnPauseUpload').style.display = ''
+  document.getElementById('btnResumeUpload').style.display = 'none'
+  document.getElementById('uploadPausedNotice').style.display = 'none'
+}
+
+function hideUploadPanel() {
+  document.getElementById('uploadZone').style.display = ''
+  document.getElementById('uploadProgressPanel').style.display = 'none'
 }
 
 // ==================== 拖拽上传 ====================
@@ -602,11 +700,17 @@ function triggerFolderInput() { document.getElementById('folderInput').click() }
 
 // ==================== 文件处理 ====================
 async function handleFolderSelect(ev) { const files = Array.from(ev.target.files || []); if (files.length) await processFiles(files) }
+
 async function processFiles(files) {
+  resetUploadState()
   showToast('分析文件夹结构...','info')
+  showUploadPanel()
+  
   try {
     const structure = {}; const fileCounts = {}; const nameSet = new Set()
     let depthCount = {}, samplePath = ''
+    
+    // 第一步：分析文件结构
     for (const f of files) {
       const p = f.webkitRelativePath || f._relativePath || ''
       if (!samplePath) samplePath = p
@@ -615,6 +719,7 @@ async function processFiles(files) {
     let maxDepth = 0, maxCount = 0
     for (const [d, c] of Object.entries(depthCount)) { if (c > maxCount) { maxCount = c; maxDepth = parseInt(d) } }
     const isRootDir = maxDepth >= 3
+    
     for (const file of files) {
       let relPath = file.webkitRelativePath || file._relativePath || ''
       const parts = relPath.split('/')
@@ -625,7 +730,6 @@ async function processFiles(files) {
       const fileName = pc[pc.length - 1]
       if (!fileName || fileName.startsWith('.')) continue
       const articleName = fileName.replace(/\.[^.]+$/, '')
-      // 容错：匹配目录名中包含的格式（处理"txt的副本"等情况）
       const matchedFmt = FORMAT_KEYS.find(k => fmtDir.includes(k))
       if (matchedFmt) fmtDir = matchedFmt
       if (!structure[fmtDir]) structure[fmtDir] = []
@@ -633,42 +737,147 @@ async function processFiles(files) {
       nameSet.add(articleName)
       fileCounts[fmtDir] = (fileCounts[fmtDir] || 0) + 1
     }
-    // 上传到 Supabase Storage
-    showToast('正在上传到云存储...','info')
-    const uploadId = Date.now().toString(36)
-    let uploaded = 0, total = files.length, failCount = 0
-    for (const file of files) {
-      let relPath = file.webkitRelativePath || file._relativePath || ''
-      const parts = relPath.split('/')
-      if (isRootDir && parts.length >= 3) relPath = parts.slice(1).join('/')
-      // Supabase Storage 不允许中文/特殊字符 key
-      const pc2 = relPath.split('/'); const fileName2 = pc2[pc2.length - 1]
-      const articleName2 = fileName2.replace(/\.[^.]+$/, '')
-      const ext2 = fileName2.includes('.') ? fileName2.split('.').pop() : ''
-      const storagePath = uploadId + '/' + articleName2.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 60) + '.' + ext2
-      try {
-        await uploadFileToStorage(file, storagePath)
-        // 标记到结构
-        let fmtDir = pc2[0].toLowerCase().trim()
-        const matchedFmt = FORMAT_KEYS.find(k => fmtDir.includes(k))
-        if (matchedFmt) fmtDir = matchedFmt
-        const articleName = fileName2.replace(/\.[^.]+$/, '')
-        const items = structure[fmtDir] || []
-        const match = items.find(i => i.name === articleName && !i.storage_path)
-        if (match) match.storage_path = storagePath
-        uploaded++
-      } catch(e) { failCount++ }
-      if (uploaded % 50 === 0) showToast('云存储上传中 ' + uploaded + '/' + total + '...','info')
-    }
-    if (failCount > 0) showToast(failCount + ' 个文件上传失败','error')
+    
+    // 保存状态
+    uploadState.files = files
+    uploadState.structure = structure
+    uploadState.nameSet = nameSet
+    uploadState.fileCounts = fileCounts
+    uploadState.samplePath = samplePath
+    uploadState.isRootDir = isRootDir
+    uploadState.total = files.length
+    uploadState.uploadId = Date.now().toString(36)
+    uploadState.startTime = Date.now()
+    uploadState.running = true
+    uploadState.uploaded = 0
+    uploadState.failCount = 0
+    
+    document.getElementById('uploadAnalyzed').textContent = nameSet.size
+    updateUploadProgress()
+    
+    // 开始上传
+    await doUploadBatch()
+    
+  } catch(err) { 
+    console.error(err)
+    showToast('解析失败: ' + err.message, 'error')
+    hideUploadPanel()
+  }
+}
+
+async function doUploadBatch() {
+  if (uploadState.cancelled) { finishUploadCancelled(); return }
+  if (uploadState.paused) return // 等待恢复
+  
+  const files = uploadState.files
+  const structure = uploadState.structure
+  const isRootDir = uploadState.isRootDir
+  const uploadId = uploadState.uploadId
+  const batchSize = 10 // 每批上传10个，方便暂停
+  
+  let idx = uploadState.uploaded
+  const end = Math.min(idx + batchSize, files.length)
+  
+  for (let i = idx; i < end; i++) {
+    if (uploadState.paused || uploadState.cancelled) break
+    
+    const file = files[i]
+    let relPath = file.webkitRelativePath || file._relativePath || ''
+    const parts = relPath.split('/')
+    if (isRootDir && parts.length >= 3) relPath = parts.slice(1).join('/')
+    const pc2 = relPath.split('/'); const fileName2 = pc2[pc2.length - 1]
+    const articleName2 = fileName2.replace(/\.[^.]+$/, '')
+    const ext2 = fileName2.includes('.') ? fileName2.split('.').pop() : ''
+    const storagePath = uploadId + '/' + articleName2.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 60) + '.' + ext2
+    
+    try {
+      await uploadFileToStorage(file, storagePath)
+      let fmtDir = pc2[0].toLowerCase().trim()
+      const matchedFmt = FORMAT_KEYS.find(k => fmtDir.includes(k))
+      if (matchedFmt) fmtDir = matchedFmt
+      const articleName = fileName2.replace(/\.[^.]+$/, '')
+      const items = structure[fmtDir] || []
+      const match = items.find(it => it.name === articleName && !it.storage_path)
+      if (match) match.storage_path = storagePath
+      uploadState.uploaded++
+    } catch(e) { uploadState.failCount++ }
+    
+    updateUploadProgress()
+    await sleep(0) // 让出主线程，允许UI更新
+  }
+  
+  if (uploadState.cancelled) { finishUploadCancelled(); return }
+  if (uploadState.paused) return // 暂停了，不继续
+  
+  if (uploadState.uploaded >= files.length) {
+    // 上传完成
+    uploadState.running = false
+    if (uploadState.failCount > 0) showToast(uploadState.failCount + ' 个文件上传失败','error')
+    
     pendingParsedFiles = {
       folderStructure: structure,
-      allArticleNames: Array.from(nameSet),
-      formatFileCounts: fileCounts,
-      rootPath: samplePath.split('/')[0] || '文章集合'
+      allArticleNames: Array.from(uploadState.nameSet),
+      formatFileCounts: uploadState.fileCounts,
+      rootPath: uploadState.samplePath.split('/')[0] || '文章集合'
     }
+    
+    hideUploadPanel()
+    document.getElementById('uploadProgressFill').classList.add('complete')
     showTypeSelectDialog()
-  } catch(err) { console.error(err); showToast('解析失败: ' + err.message, 'error') }
+  } else {
+    // 继续下一批
+    setTimeout(() => doUploadBatch(), 10)
+  }
+}
+
+function pauseUpload() {
+  if (!uploadState.running) return
+  uploadState.paused = true
+  document.getElementById('btnPauseUpload').style.display = 'none'
+  document.getElementById('btnResumeUpload').style.display = ''
+  document.getElementById('uploadPausedNotice').style.display = 'block'
+  showToast('上传已暂停 ⏸','info')
+}
+
+function resumeUpload() {
+  if (!uploadState.paused) return
+  uploadState.paused = false
+  document.getElementById('btnPauseUpload').style.display = ''
+  document.getElementById('btnResumeUpload').style.display = 'none'
+  document.getElementById('uploadPausedNotice').style.display = 'none'
+  showToast('继续上传... ▶','info')
+  doUploadBatch()
+}
+
+function cancelUpload() {
+  if (!uploadState.running) return
+  if (!confirm('确认取消本次上传？已上传的文件将会丢失。')) return
+  uploadState.cancelled = true
+  uploadState.paused = false
+  
+  // 如果暂停中，直接清理
+  if (!uploadState.running) { finishUploadCancelled(); return }
+  // running 状态中，doUploadBatch 会检测到 cancelled 并调用 finishUploadCancelled
+}
+
+async function finishUploadCancelled() {
+  showToast('上传已取消', 'info')
+  
+  // 尝试删除已上传的文件
+  if (uploadState.uploadId && uploadState.uploaded > 0) {
+    try {
+      const { data: files } = await supabaseClient.storage.from(STORAGE_BUCKET).list(uploadState.uploadId)
+      if (files && files.length > 0) {
+        const paths = files.map(f => uploadState.uploadId + '/' + f.name)
+        await supabaseClient.storage.from(STORAGE_BUCKET).remove(paths)
+      }
+    } catch(e) { console.error('清理已上传文件失败', e) }
+  }
+  
+  resetUploadState()
+  hideUploadPanel()
+  pendingParsedFiles = null
+  document.getElementById('folderInput').value = ''
 }
 
 // ==================== 类型选择弹窗 ====================
