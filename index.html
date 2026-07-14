@@ -212,8 +212,9 @@ async function ensureStorageBucket() {
 }
 
 async function uploadFileToStorage(file, path) {
-  const { error } = await supabaseClient.storage.from(STORAGE_BUCKET).upload(path, file, { upsert: true })
-  if (error) throw error
+  const contentType = file.type || 'application/octet-stream'
+  const { data, error } = await supabaseClient.storage.from(STORAGE_BUCKET).upload(path, file, { upsert: true, contentType })
+  if (error) { console.error('上传失败', path, error); throw error }
   return path
 }
 async function downloadFromStorage(path) {
