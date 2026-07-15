@@ -664,6 +664,12 @@ function showUploadPanel() {
 function hideUploadPanel() {
   document.getElementById('uploadZone').style.display = ''
   document.getElementById('uploadProgressPanel').style.display = 'none'
+  // 重置进度条
+  const fill = document.getElementById('uploadProgressFill')
+  if (fill) { fill.style.width = '0%'; fill.classList.remove('complete') }
+  document.getElementById('uploadPausedNotice').style.display = 'none'
+  document.getElementById('btnPauseUpload').style.display = ''
+  document.getElementById('btnResumeUpload').style.display = 'none'
 }
 
 // ==================== 拖拽上传 ====================
@@ -849,14 +855,13 @@ function resumeUpload() {
 }
 
 function cancelUpload() {
-  if (!uploadState.running) return
+  if (!uploadState.running && !uploadState.paused) return
   if (!confirm('确认删除本次上传？已上传的文件将会被清理。')) return
   uploadState.cancelled = true
   uploadState.paused = false
-  
-  // 如果暂停中，直接清理
-  if (!uploadState.running) { finishUploadCancelled(); return }
-  // running 状态中，doUploadBatch 会检测到 cancelled 并调用 finishUploadCancelled
+  uploadState.running = false
+  // 直接清理，不依赖 doUploadBatch 检测
+  finishUploadCancelled()
 }
 
 async function finishUploadCancelled() {
@@ -877,6 +882,9 @@ async function finishUploadCancelled() {
   hideUploadPanel()
   pendingParsedFiles = null
   document.getElementById('folderInput').value = ''
+  // 重置进度条样式
+  const fill = document.getElementById('uploadProgressFill')
+  if (fill) { fill.style.width = '0%'; fill.classList.remove('complete') }
 }
 
 // ==================== 类型选择弹窗 ====================
