@@ -971,6 +971,8 @@ async function confirmType() {
     })
     // 合并根路径
     if (!existing.rootPath) existing.rootPath = pendingParsedFiles.rootPath
+    // 记录上传时间
+    existing.uploadedAt = existing.uploadedAt || new Date().toISOString()
     state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t].folderStructure || {}).length > 0)
     // 保存到 Supabase（先存类型，再存文章，避免外键冲突）
     await saveTypesToCloud()
@@ -1627,9 +1629,10 @@ function renderHistory() {
         const files = td.folderStructure[fmt] || []
         if (!files.length) continue
         const fileList = files.map(f => '<div data-path="' + (f.storage_path || '') + '" data-name="' + (f.original_file || f.fullName) + '" style="padding:4px 8px;background:#f8fafc;border-radius:4px;margin-bottom:3px;cursor:pointer;font-size:13px">📄 ' + f.name + '</div>').join('')
+        const uploadTime = td.uploadedAt ? new Date(td.uploadedAt).toLocaleString('zh-CN', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }) : '未知'
         html += '<div class="card"><div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px">' +
           '<div style="flex:1;min-width:280px"><div class="card-title">🏷️ ' + type + ' · ' + PLATFORM_CONFIG[fmt].icon + ' ' + PLATFORM_CONFIG[fmt].label + '</div>' +
-          '<div class="card-sub"><strong>' + files.length + '</strong> 篇文章（已导出 ' + usedSet.size + ' 篇） · 点击文件名查看内容</div>' +
+          '<div class="card-sub"><strong>' + files.length + '</strong> 篇文章（已导出 ' + usedSet.size + ' 篇） · 📅 ' + uploadTime + ' · 点击文件名查看内容</div>' +
           '<div id="fileList-' + type + '-' + fmt + '" style="max-height:300px;overflow-y:auto;margin-top:8px">' + fileList + '</div>' +
           '<div id="previewArea-' + type + '-' + fmt + '" style="display:none;margin-top:8px;padding:12px;background:#f8fafc;border-radius:8px;border:1px solid var(--border);max-height:300px;overflow:auto"></div></div>' +
           '<div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0">' +
