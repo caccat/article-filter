@@ -934,6 +934,26 @@ async function confirmType() {
       state.typeData[typeName] = { folderStructure: {}, allArticleNames: [], formatFileCounts: {}, rootPath: '' }
     }
     const existing = state.typeData[typeName]
+    
+    // 检测是否重复上传同一批文件夹（100% 文件路径匹配）
+    const existingPaths = new Set()
+    for (const fmt of FORMAT_KEYS) {
+      (existing.folderStructure[fmt] || []).forEach(f => existingPaths.add(fmt + '/' + f.name))
+    }
+    const newPaths = new Set()
+    for (const fmt of FORMAT_KEYS) {
+      (pendingParsedFiles.folderStructure[fmt] || []).forEach(f => newPaths.add(fmt + '/' + f.name))
+    }
+    // 如果新上传的每条路径都在已有数据中，说明是重复上传
+    const allNewExist = newPaths.size > 0 && [...newPaths].every(p => existingPaths.has(p))
+    if (allNewExist) {
+      showToast('⚠️ 这批文章已经上传过了，跳过重复文件', 'info')
+      pendingParsedFiles = null
+      updateTypeSelectors()
+      document.getElementById('typeModal').remove()
+      return
+    }
+    
     // 合并文件夹结构
     for (const fmt of FORMAT_KEYS) {
       if (pendingParsedFiles.folderStructure[fmt]) {
