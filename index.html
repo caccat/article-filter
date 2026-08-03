@@ -264,7 +264,7 @@ async function loadAllFromCloud() {
   try {
     const [typesRes, articlesRes, templatesRes, usedRes, filtersRes] = await Promise.all([
       supabaseClient.from('types').select('name'),
-      supabaseClient.from('articles').select('type, format, title, city, keywords, storage_path, original_file'),
+      supabaseClient.from('articles').select('type, format, title, city, keywords, storage_path, original_file, created_at'),
       supabaseClient.from('templates').select('*'),
       supabaseClient.from('used_articles').select('type, title'),
       supabaseClient.from('filter_configs').select('*')
@@ -309,15 +309,17 @@ async function loadAllFromCloud() {
         if (!state.typeData[a.type].folderStructure[a.format]) state.typeData[a.type].folderStructure[a.format] = []
         state.typeData[a.type].folderStructure[a.format].push({
           name: a.title, fullName: a.title + '.' + ({docx:'docx',excel:'xlsx',ptxt:'ptxt',txt:'txt'}[a.format] || a.format),
-          storage_path: a.storage_path, city: a.city, keywords: a.keywords || []
+          storage_path: a.storage_path, city: a.city, keywords: a.keywords || [], created_at: a.created_at
         })
         if (!state.typeData[a.type].allArticleNames.includes(a.title)) state.typeData[a.type].allArticleNames.push(a.title)
         state.typeData[a.type].formatFileCounts[a.format] = (state.typeData[a.type].formatFileCounts[a.format] || 0) + 1
       })
       state.uploaded = Object.keys(state.typeData).length > 0
     }
-    // 从 localStorage 恢复上传批次记录
+    // 从 localStorage 恢复上传批次记录；旧数据没有记录时按创建时间自动重建
     loadUploadSessions()
+    rebuildUploadSessionsFromArticles()
+    saveUploadSessions()
     updateTypeSelectors(); updateNavBadges(); renderManage(); renderOverview();
     if (state.uploaded) { buildTagMatrix(); renderHeatmap(); }
   } catch(e) { console.error('加载云数据失败', e) }
@@ -415,6 +417,56 @@ function loadUploadSessions() {
       }
     }
   } catch(e) {}
+}
+
+// 为没有 upload session 的旧数据，根据 created_at 自动重建上传批次
+function rebuildUploadSessionsFromArticles() {
+  const GAP_MS = 10 * 60 * 1000 // 10 分钟视为同一次上传
+  for (const type of state.types) {
+    const td = state.typeData[type]
+    if (!td || (td.uploads && td.uploads.length > 0)) continue
+
+    const articles = []
+    for (const fmt of FORMAT_KEYS) {
+      for (const f of (td.folderStructure[fmt] || [])) {
+        if (f.created_at) articles.push({ ...f, format: fmt })
+      }
+    }
+    if (articles.length === 0) continue
+
+    articles.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+
+    const clusters = []
+    let current = [articles[0]]
+    for (let i = 1; i < articles.length; i++) {
+      const prevTime = new Date(current[current.length - 1].created_at).getTime()
+      const curTime = new Date(articles[i].created_at).getTime()
+      if (curTime - prevTime > GAP_MS) {
+        clusters.push(current)
+        current = [articles[i]]
+      } else {
+        current.push(articles[i])
+      }
+    }
+    clusters.push(current)
+
+    td.uploads = clusters.map((cluster, idx) => {
+      const session = {
+        sessionId: 'rebuilt-' + Date.now() + '-' + idx + '-' + Math.random().toString(36).slice(2),
+        uploadedAt: cluster[0].created_at,
+        rootPath: '历史批次-' + (idx + 1),
+        totalFiles: cluster.length,
+        formatFileCounts: {},
+        formatFiles: {}
+      }
+      for (const f of cluster) {
+        session.formatFileCounts[f.format] = (session.formatFileCounts[f.format] || 0) + 1
+        if (!session.formatFiles[f.format]) session.formatFiles[f.format] = []
+        session.formatFiles[f.format].push(f.name)
+      }
+      return session
+    })
+  }
 }
 
 // ==================== 关键词模板管理 ====================
