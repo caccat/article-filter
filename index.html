@@ -376,9 +376,7 @@ async function saveArticlesToCloud(type, data) {
     const rows = []
     for (const fmt of FORMAT_KEYS) {
       for (const f of (data.folderStructure[fmt] || [])) {
-        if (f.storage_path) {
-          rows.push({ type, format: fmt, title: f.name, city: f.city, keywords: f.keywords, storage_path: f.storage_path, original_file: f.original_file })
-        }
+        rows.push({ type, format: fmt, title: f.name, city: f.city, keywords: f.keywords, storage_path: f.storage_path || '', original_file: f.original_file })
       }
     }
     if (rows.length > 0) {
