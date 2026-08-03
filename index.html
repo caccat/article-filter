@@ -462,7 +462,7 @@ function rebuildUploadSessionsFromArticles() {
       for (const f of cluster) {
         session.formatFileCounts[f.format] = (session.formatFileCounts[f.format] || 0) + 1
         if (!session.formatFiles[f.format]) session.formatFiles[f.format] = []
-        session.formatFiles[f.format].push(f.name)
+        session.formatFiles[f.format].push({ name: f.name, storage_path: f.storage_path || '' })
       }
       return session
     })
@@ -1052,26 +1052,22 @@ async function confirmType() {
     for (const fmt of FORMAT_KEYS) {
       const files = pendingParsedFiles.folderStructure[fmt] || []
       uploadSession.formatFileCounts[fmt] = files.length
-      uploadSession.formatFiles[fmt] = files.map(f => f.name)
+      uploadSession.formatFiles[fmt] = files.map(f => ({ name: f.name, storage_path: f.storage_path || '' }))
     }
     existing.uploads.push(uploadSession)
     existing.uploadedAt = uploadSession.uploadedAt
     
-    // 合并文件夹结构（用于导出/筛选等功能，保持功能兼容）
+    // 合并文件夹结构（跨批次允许同名文章共存，同一批次内无重复所以直接追加）
     for (const fmt of FORMAT_KEYS) {
       if (pendingParsedFiles.folderStructure[fmt]) {
         if (!existing.folderStructure[fmt]) existing.folderStructure[fmt] = []
-        // 避免重复：已存在同名文章的不再添加
-        const existingNames = new Set(existing.folderStructure[fmt].map(f => f.name))
-        const newFiles = pendingParsedFiles.folderStructure[fmt].filter(f => !existingNames.has(f.name))
-        existing.folderStructure[fmt].push(...newFiles)
-        existing.formatFileCounts[fmt] = (existing.formatFileCounts[fmt] || 0) + newFiles.length
+        const allFiles = pendingParsedFiles.folderStructure[fmt]
+        existing.folderStructure[fmt].push(...allFiles)
+        existing.formatFileCounts[fmt] = (existing.formatFileCounts[fmt] || 0) + allFiles.length
       }
     }
-    // 合并文章名列表
-    pendingParsedFiles.allArticleNames.forEach(n => {
-      if (!existing.allArticleNames.includes(n)) existing.allArticleNames.push(n)
-    })
+    // 合并文章名列表（允许重复标题，直接追加）
+    existing.allArticleNames.push(...pendingParsedFiles.allArticleNames)
     // 合并根路径
     if (!existing.rootPath) existing.rootPath = pendingParsedFiles.rootPath
     state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t].folderStructure || {}).length > 0)
@@ -1749,15 +1745,20 @@ function renderHistory() {
       
       // 各格式文件列表
       for (const fmt of FORMAT_KEYS) {
-        const fmtNames = session.formatFiles[fmt] || []
-        if (!fmtNames.length) continue
+        const fmtEntries = session.formatFiles[fmt] || []
+        if (!fmtEntries.length) continue
+        // 兼容旧格式（纯字符串数组）和新格式（{name,storage_path}对象数组）
+        const isOldFormat = typeof fmtEntries[0] === 'string'
+        const batchSPaths = isOldFormat ? null : new Set(fmtEntries.map(e => e.storage_path).filter(Boolean))
         // 从合并数据中筛选本批次文件
         const allFiles = td.folderStructure[fmt] || []
-        const batchFiles = allFiles.filter(f => fmtNames.includes(f.name))
+        const batchFiles = isOldFormat
+          ? allFiles.filter(f => fmtEntries.includes(f.name))
+          : allFiles.filter(f => batchSPaths.has(f.storage_path))
         if (!batchFiles.length) continue
         
         const fileList = batchFiles.map(f => '<div data-path="' + (f.storage_path || '') + '" data-name="' + (f.original_file || f.fullName) + '" style="padding:4px 8px;background:#f8fafc;border-radius:4px;margin-bottom:3px;cursor:pointer;font-size:13px">📄 ' + f.name + '</div>').join('')
-        html += '<div style="margin-top:8px"><strong>' + PLATFORM_CONFIG[fmt].icon + ' ' + PLATFORM_CONFIG[fmt].label + '</strong>（' + fmtNames.length + '篇）</div>' +
+        html += '<div style="margin-top:8px"><strong>' + PLATFORM_CONFIG[fmt].icon + ' ' + PLATFORM_CONFIG[fmt].label + '</strong>（' + fmtEntries.length + '篇）</div>' +
           '<div id="fl-' + sessionId + '-' + fmt + '" style="max-height:200px;overflow-y:auto;margin-top:4px">' + fileList + '</div>' +
           '<div id="pa-' + sessionId + '-' + fmt + '" style="display:none;margin-top:8px;padding:12px;background:#f8fafc;border-radius:8px;border:1px solid var(--border);max-height:300px;overflow:auto"></div>'
       }
@@ -1864,44 +1865,43 @@ async function deleteUploadSession(type, sessionId) {
   const session = td.uploads.find(u => u.sessionId === sessionId)
   if (!session) return
   
-  // 从合并的 folderStructure 中移除该批次的文件（仅移除不属于其他批次的）
-  const otherSessionNames = new Set()
-  for (const s of td.uploads) {
-    if (s.sessionId === sessionId) continue
-    for (const fmt of FORMAT_KEYS) {
-      (s.formatFiles[fmt] || []).forEach(n => otherSessionNames.add(fmt + '/' + n))
-    }
-  }
-  
+  // 用 storage_path 精确定位本批次文件（跨批次不允许误删）
   for (const fmt of FORMAT_KEYS) {
+    const fmtEntries = session.formatFiles[fmt] || []
+    if (!fmtEntries.length) continue
+    const isOldFormat = typeof fmtEntries[0] === 'string'
+    const sessionSPaths = isOldFormat ? null : new Set(fmtEntries.map(e => e.storage_path).filter(Boolean))
+    
     const fmtFiles = td.folderStructure[fmt] || []
-    const batchNames = new Set(session.formatFiles[fmt] || [])
-    const toRemove = fmtFiles.filter(f => batchNames.has(f.name) && !otherSessionNames.has(fmt + '/' + f.name))
+    const toRemove = isOldFormat
+      ? fmtFiles.filter(f => fmtEntries.includes(f.name))
+      : fmtFiles.filter(f => sessionSPaths.has(f.storage_path))
+    
     // 删除 Storage 文件
     for (const f of toRemove) {
       if (f.storage_path) {
         try { await supabaseClient.storage.from(STORAGE_BUCKET).remove([f.storage_path]) } catch(e) {}
       }
     }
-    // 从 Supabase articles 表中删除
-    const namesToDelete = toRemove.map(f => f.name)
-    if (namesToDelete.length > 0) {
-      for (let i = 0; i < namesToDelete.length; i += 50) {
-        await supabaseClient.from('articles').delete().eq('type', type).eq('format', fmt).in('title', namesToDelete.slice(i, i + 50))
+    // 从 Supabase articles 表中删除（按 storage_path 精确匹配）
+    const spathsToDelete = toRemove.map(f => f.storage_path).filter(Boolean)
+    if (spathsToDelete.length > 0) {
+      for (let i = 0; i < spathsToDelete.length; i += 50) {
+        await supabaseClient.from('articles').delete().eq('type', type).eq('format', fmt).in('storage_path', spathsToDelete.slice(i, i + 50))
       }
     }
     // 从合并结构中移除
-    td.folderStructure[fmt] = fmtFiles.filter(f => !batchNames.has(f.name) || otherSessionNames.has(fmt + '/' + f.name))
+    const removeSPaths = new Set(toRemove.map(f => f.storage_path))
+    td.folderStructure[fmt] = fmtFiles.filter(f => !removeSPaths.has(f.storage_path))
     td.formatFileCounts[fmt] = (td.formatFileCounts[fmt] || 0) - toRemove.length
     if (td.formatFileCounts[fmt] <= 0) delete td.formatFileCounts[fmt]
   }
   
-  // 更新 allArticleNames
-  const remainingNames = new Set()
+  // 更新 allArticleNames（保留重复标题）
+  td.allArticleNames = []
   for (const fmt of FORMAT_KEYS) {
-    (td.folderStructure[fmt] || []).forEach(f => remainingNames.add(f.name))
+    (td.folderStructure[fmt] || []).forEach(f => td.allArticleNames.push(f.name))
   }
-  td.allArticleNames = Array.from(remainingNames)
   
   // 移除该上传批次
   td.uploads = td.uploads.filter(u => u.sessionId !== sessionId)
