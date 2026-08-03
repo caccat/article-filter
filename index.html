@@ -270,11 +270,13 @@ async function loadAllFromCloud() {
       supabaseClient.from('filter_configs').select('*')
     ])
     await loadKeywordTemplatesFromCloud()
-    // 加载类型
-    if (typesRes.data && typesRes.data.length > 0) {
-      state.types = typesRes.data.map(t => t.name)
-      if (!state.types.includes('提示词一')) state.types.unshift('提示词一')
-    }
+    // 加载类型（优先用 types 表，同时从 articles 补全，避免 articles 里有但 types 表缺失导致统计遗漏）
+    const typeSet = new Set()
+    if (typesRes.data) typesRes.data.forEach(t => typeSet.add(t.name))
+    if (articlesRes.data) articlesRes.data.forEach(a => typeSet.add(a.type))
+    if (typeSet.size === 0) typeSet.add('提示词一')
+    state.types = Array.from(typeSet)
+    if (!state.types.includes('提示词一')) state.types.unshift('提示词一')
     state.types.forEach(t => { if (!state.usedArticlesByType[t]) state.usedArticlesByType[t] = new Set() })
     // 加载已用文章
     if (usedRes.data) {
