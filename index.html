@@ -3,7 +3,6 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- v2.4 -->
 <title>文章筛选导出工具</title>
 <style>
 :root{--bg:#fffdf7;--card-bg:#fff;--primary:#4a90e2;--primary-dark:#3a7bd5;--primary-light:#eef4ff;--success:#22c55e;--warning:#eab308;--danger:#ef4444;--text:#1f2937;--text-muted:#6b7280;--border:#e5e7eb;--border-light:#f3f4f6;--shadow:0 4px 20px rgba(0,0,0,0.04);--radius:12px;--radius-sm:8px}
@@ -317,6 +316,8 @@ async function loadAllFromCloud() {
       })
       state.uploaded = Object.keys(state.typeData).length > 0
     }
+    // 从 localStorage 恢复上传批次记录
+    loadUploadSessions()
     updateTypeSelectors(); updateNavBadges(); renderManage(); renderOverview();
     if (state.uploaded) { buildTagMatrix(); renderHeatmap(); }
   } catch(e) { console.error('加载云数据失败', e) }
@@ -387,6 +388,33 @@ async function saveArticlesToCloud(type, data) {
 
 async function syncToCloud() {
   await Promise.all([saveTypesToCloud(), saveTemplatesToCloud(), saveUsedToCloud(), saveFiltersToCloud(), saveKeywordTemplatesToCloud()])
+}
+
+// 上传记录 localStorage 持久化
+function saveUploadSessions() {
+  try {
+    const data = {}
+    for (const type of state.types) {
+      const td = state.typeData[type]
+      if (td && td.uploads && td.uploads.length > 0) {
+        data[type] = td.uploads
+      }
+    }
+    localStorage.setItem('uploadSessions', JSON.stringify(data))
+  } catch(e) {}
+}
+
+function loadUploadSessions() {
+  try {
+    const raw = localStorage.getItem('uploadSessions')
+    if (!raw) return
+    const data = JSON.parse(raw)
+    for (const type of Object.keys(data)) {
+      if (state.typeData[type]) {
+        state.typeData[type].uploads = data[type]
+      }
+    }
+  } catch(e) {}
 }
 
 // ==================== 关键词模板管理 ====================
@@ -929,12 +957,17 @@ async function confirmType() {
   if (!state.types.includes(typeName)) { state.types.push(typeName); state.usedArticlesByType[typeName] = new Set() }
   state.activeType = typeName
   FORMAT_KEYS.forEach(f => { state.filters[f].activeType = typeName })
+  let thisUploadCount = 0
   if (pendingParsedFiles) {
     // 追加合并，而不是覆盖（支持多次上传同类型文章）
     if (!state.typeData[typeName]) {
-      state.typeData[typeName] = { folderStructure: {}, allArticleNames: [], formatFileCounts: {}, rootPath: '' }
+      state.typeData[typeName] = { folderStructure: {}, allArticleNames: [], formatFileCounts: {}, rootPath: '', uploads: [] }
     }
     const existing = state.typeData[typeName]
+    if (!existing.uploads) existing.uploads = []
+    
+    // 本次上传的文件总数（用于提示）
+    thisUploadCount = pendingParsedFiles.allArticleNames.length
     
     // 检测是否重复上传同一批文件夹（100% 文件路径匹配）
     const existingPaths = new Set()
@@ -955,7 +988,24 @@ async function confirmType() {
       return
     }
     
-    // 合并文件夹结构
+    // 创建独立的本次上传记录（不合并）
+    const uploadSession = {
+      sessionId: Date.now().toString(),
+      uploadedAt: new Date().toISOString(),
+      rootPath: pendingParsedFiles.rootPath || '',
+      totalFiles: thisUploadCount,
+      formatFileCounts: {},
+      formatFiles: {}
+    }
+    for (const fmt of FORMAT_KEYS) {
+      const files = pendingParsedFiles.folderStructure[fmt] || []
+      uploadSession.formatFileCounts[fmt] = files.length
+      uploadSession.formatFiles[fmt] = files.map(f => f.name)
+    }
+    existing.uploads.push(uploadSession)
+    existing.uploadedAt = uploadSession.uploadedAt
+    
+    // 合并文件夹结构（用于导出/筛选等功能，保持功能兼容）
     for (const fmt of FORMAT_KEYS) {
       if (pendingParsedFiles.folderStructure[fmt]) {
         if (!existing.folderStructure[fmt]) existing.folderStructure[fmt] = []
@@ -972,20 +1022,19 @@ async function confirmType() {
     })
     // 合并根路径
     if (!existing.rootPath) existing.rootPath = pendingParsedFiles.rootPath
-    // 记录上传时间
-    existing.uploadedAt = existing.uploadedAt || new Date().toISOString()
     state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t].folderStructure || {}).length > 0)
     // 保存到 Supabase（先存类型，再存文章，避免外键冲突）
     await saveTypesToCloud()
     await saveArticlesToCloud(typeName, pendingParsedFiles)
+    // 保存上传记录到 localStorage
+    saveUploadSessions()
     pendingParsedFiles = null
   }
   updateTypeSelectors()
   document.getElementById('typeModal').remove()
   updateUploadUI(); updateNavBadges(); renderOverview(); renderManage()
   switchPage('overview')
-  const td = state.typeData[typeName] || {}
-  showToast('✅ 已归入「' + typeName + '」，共 ' + (td.allArticleNames || []).length + ' 篇文章','success')
+  showToast('✅ 已归入「' + typeName + '」，本次上传 ' + thisUploadCount + ' 篇文章','success')
 }
 function updateUploadUI() {
   const zone = document.getElementById('uploadZone'); const success = document.getElementById('uploadSuccess')
@@ -1625,49 +1674,72 @@ function renderHistory() {
   for (const type of state.types) {
     const td = state.typeData[type]
     const usedSet = state.usedArticlesByType[type] || new Set()
-    if (td && td.folderStructure) {
+    if (!td || !td.folderStructure) { 
+      if (usedSet.size > 0) html += '<div class="card"><div class="card-title">🏷️ ' + type + '</div><div class="card-sub">已导出 ' + usedSet.size + ' 篇</div></div>'
+      continue
+    }
+    const uploads = td.uploads || []
+    
+    if (uploads.length === 0) {
+      // 兼容旧数据：没有批次的显示合并视图
+      const uploadTime = td.uploadedAt ? new Date(td.uploadedAt).toLocaleString('zh-CN', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }) : '未知'
+      html += '<div class="card"><div class="card-title">🏷️ ' + type + '</div><div class="card-sub"><strong>' + (td.allArticleNames || []).length + '</strong> 篇文章（已导出 ' + usedSet.size + ' 篇） · 📅 ' + uploadTime + '</div></div>'
+      continue
+    }
+    
+    // 按上传批次独立显示
+    for (const session of uploads) {
+      const uploadTime = session.uploadedAt ? new Date(session.uploadedAt).toLocaleString('zh-CN', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }) : '未知'
+      const sessionId = session.sessionId
+      
+      html += '<div class="card"><div class="card-title">🏷️ ' + type + ' · 📁 ' + (session.rootPath || '未知') + '</div>' +
+        '<div class="card-sub"><strong>' + session.totalFiles + '</strong> 篇文章 · 📅 ' + uploadTime + ' · 点击文件名查看内容</div>'
+      
+      // 各格式文件列表
       for (const fmt of FORMAT_KEYS) {
-        const files = td.folderStructure[fmt] || []
-        if (!files.length) continue
-        const fileList = files.map(f => '<div data-path="' + (f.storage_path || '') + '" data-name="' + (f.original_file || f.fullName) + '" style="padding:4px 8px;background:#f8fafc;border-radius:4px;margin-bottom:3px;cursor:pointer;font-size:13px">📄 ' + f.name + '</div>').join('')
-        const uploadTime = td.uploadedAt ? new Date(td.uploadedAt).toLocaleString('zh-CN', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }) : '未知'
-        html += '<div class="card"><div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px">' +
-          '<div style="flex:1;min-width:280px"><div class="card-title">🏷️ ' + type + ' · ' + PLATFORM_CONFIG[fmt].icon + ' ' + PLATFORM_CONFIG[fmt].label + '</div>' +
-          '<div class="card-sub"><strong>' + files.length + '</strong> 篇文章（已导出 ' + usedSet.size + ' 篇） · 📅 ' + uploadTime + ' · 点击文件名查看内容</div>' +
-          '<div id="fileList-' + type + '-' + fmt + '" style="max-height:300px;overflow-y:auto;margin-top:8px">' + fileList + '</div>' +
-          '<div id="previewArea-' + type + '-' + fmt + '" style="display:none;margin-top:8px;padding:12px;background:#f8fafc;border-radius:8px;border:1px solid var(--border);max-height:300px;overflow:auto"></div></div>' +
-          '<div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0">' +
-          '<button class="btn btn-sm btn-outline" onclick="changeUploadType(\'' + type + '\',\'' + fmt + '\')">✏️ 修改类型</button>' +
-          '<button class="btn btn-sm btn-danger" onclick="deleteUploadRecord(\'' + type + '\',\'' + fmt + '\')">🗑 删除</button></div></div></div>'
-        // 绑定点击事件查看内容
-        ;(function(type, fmt) {
-          setTimeout(() => {
-            const list = document.getElementById('fileList-' + type + '-' + fmt)
-            if (!list) return
+        const fmtNames = session.formatFiles[fmt] || []
+        if (!fmtNames.length) continue
+        // 从合并数据中筛选本批次文件
+        const allFiles = td.folderStructure[fmt] || []
+        const batchFiles = allFiles.filter(f => fmtNames.includes(f.name))
+        if (!batchFiles.length) continue
+        
+        const fileList = batchFiles.map(f => '<div data-path="' + (f.storage_path || '') + '" data-name="' + (f.original_file || f.fullName) + '" style="padding:4px 8px;background:#f8fafc;border-radius:4px;margin-bottom:3px;cursor:pointer;font-size:13px">📄 ' + f.name + '</div>').join('')
+        html += '<div style="margin-top:8px"><strong>' + PLATFORM_CONFIG[fmt].icon + ' ' + PLATFORM_CONFIG[fmt].label + '</strong>（' + fmtNames.length + '篇）</div>' +
+          '<div id="fl-' + sessionId + '-' + fmt + '" style="max-height:200px;overflow-y:auto;margin-top:4px">' + fileList + '</div>' +
+          '<div id="pa-' + sessionId + '-' + fmt + '" style="display:none;margin-top:8px;padding:12px;background:#f8fafc;border-radius:8px;border:1px solid var(--border);max-height:300px;overflow:auto"></div>'
+      }
+      
+      html += '<div style="margin-top:10px;display:flex;gap:6px">' +
+        '<button class="btn btn-sm btn-danger" onclick="deleteUploadSession(\'' + type + '\',\'' + sessionId + '\')">🗑 删除本批</button></div></div>'
+      
+      // 绑定点击事件
+      ;(function(sid) {
+        setTimeout(() => {
+          for (const fmt of FORMAT_KEYS) {
+            const list = document.getElementById('fl-' + sid + '-' + fmt)
+            if (!list) continue
             list.querySelectorAll('[data-path]').forEach(el => {
               el.onclick = async () => {
                 const path = el.dataset.path
                 const name = el.dataset.name
-                const area = document.getElementById('previewArea-' + type + '-' + fmt)
-                if (!path) { area.innerHTML = '<span style="color:var(--danger)">无文件路径（文件未上传到云）</span>'; area.style.display = 'block'; return }
+                const area = document.getElementById('pa-' + sid + '-' + fmt)
+                if (!path) { area.innerHTML = '<span style="color:var(--danger)">无文件路径</span>'; area.style.display = 'block'; return }
                 if (area.style.display === 'block' && area.dataset.curPath === path) { area.style.display = 'none'; area.dataset.curPath = ''; return }
                 area.innerHTML = '<span style="color:var(--text-muted)">加载中...</span>'; area.style.display = 'block'
                 try {
                   const buf = await downloadFromStorage(path)
                   let text
-            try { text = new TextDecoder('utf-8', { fatal: false }).decode(buf) }
-            catch { text = '(二进制文件,大小 ' + buf.byteLength + ' 字节)' }
-            area.innerHTML = '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">📄 ' + name + '</div><pre style="margin:0;white-space:pre-wrap;font-size:12px;line-height:1.6">' + text.replace(/</g, '&lt;') + '</pre>'
+                  try { text = new TextDecoder('utf-8', { fatal: false }).decode(buf) }
+                  catch { text = '(二进制文件,大小 ' + buf.byteLength + ' 字节)' }
+                  area.innerHTML = '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">📄 ' + name + '</div><pre style="margin:0;white-space:pre-wrap;font-size:12px;line-height:1.6">' + text.replace(/</g, '&lt;') + '</pre>'
                   area.dataset.curPath = path
                 } catch(e) { area.innerHTML = '<span style="color:var(--danger)">加载失败: ' + e.message + '</span>' }
               }
             })
-          }, 100)
-        })(type, fmt)
-      }
-    } else if (usedSet.size > 0) {
-      html += '<div class="card"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="card-title">🏷️ ' + type + '</div><div class="card-sub">已导出 <strong>' + usedSet.size + '</strong> 篇（原始文件已移除）</div></div>' +
-        '<button class="btn btn-sm btn-danger" onclick="deleteUploadRecord(\'' + type + '\',\'all\')">🗑 清空</button></div></div>'
+          }
+        }, 100)
+      })(sessionId)
     }
   }
   c.innerHTML = html || '<div class="empty-state"><span class="icon">📁</span><p>暂无上传记录</p></div>'
@@ -1725,10 +1797,77 @@ async function deleteUploadRecord(type, fmt) {
     }
     await supabaseClient.from('articles').delete().eq('type', type).eq('format', fmt)
   }
+  saveUploadSessions()
   state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t]?.folderStructure || {}).length > 0)
   buildTagMatrix(); renderHistory(); updateNavBadges(); renderOverview()
   FORMAT_KEYS.forEach(f => updateFilterPage(f))
   showToast('已删除 ✅','success')
+}
+
+async function deleteUploadSession(type, sessionId) {
+  if (!confirm('确认删除这批上传记录？文章文件也会被清除。')) return
+  const td = state.typeData[type]
+  if (!td || !td.uploads) return
+  
+  const session = td.uploads.find(u => u.sessionId === sessionId)
+  if (!session) return
+  
+  // 从合并的 folderStructure 中移除该批次的文件（仅移除不属于其他批次的）
+  const otherSessionNames = new Set()
+  for (const s of td.uploads) {
+    if (s.sessionId === sessionId) continue
+    for (const fmt of FORMAT_KEYS) {
+      (s.formatFiles[fmt] || []).forEach(n => otherSessionNames.add(fmt + '/' + n))
+    }
+  }
+  
+  for (const fmt of FORMAT_KEYS) {
+    const fmtFiles = td.folderStructure[fmt] || []
+    const batchNames = new Set(session.formatFiles[fmt] || [])
+    const toRemove = fmtFiles.filter(f => batchNames.has(f.name) && !otherSessionNames.has(fmt + '/' + f.name))
+    // 删除 Storage 文件
+    for (const f of toRemove) {
+      if (f.storage_path) {
+        try { await supabaseClient.storage.from(STORAGE_BUCKET).remove([f.storage_path]) } catch(e) {}
+      }
+    }
+    // 从 Supabase articles 表中删除
+    const namesToDelete = toRemove.map(f => f.name)
+    if (namesToDelete.length > 0) {
+      for (let i = 0; i < namesToDelete.length; i += 50) {
+        await supabaseClient.from('articles').delete().eq('type', type).eq('format', fmt).in('title', namesToDelete.slice(i, i + 50))
+      }
+    }
+    // 从合并结构中移除
+    td.folderStructure[fmt] = fmtFiles.filter(f => !batchNames.has(f.name) || otherSessionNames.has(fmt + '/' + f.name))
+    td.formatFileCounts[fmt] = (td.formatFileCounts[fmt] || 0) - toRemove.length
+    if (td.formatFileCounts[fmt] <= 0) delete td.formatFileCounts[fmt]
+  }
+  
+  // 更新 allArticleNames
+  const remainingNames = new Set()
+  for (const fmt of FORMAT_KEYS) {
+    (td.folderStructure[fmt] || []).forEach(f => remainingNames.add(f.name))
+  }
+  td.allArticleNames = Array.from(remainingNames)
+  
+  // 移除该上传批次
+  td.uploads = td.uploads.filter(u => u.sessionId !== sessionId)
+  
+  // 如果所有文件夹结构都空了，删除该类型
+  if (!Object.keys(td.folderStructure).some(fmt => (td.folderStructure[fmt] || []).length > 0)) {
+    delete state.typeData[type]
+    delete state.usedArticlesByType[type]
+    state.types = state.types.filter(t => t !== type)
+    if (state.activeType === type) state.activeType = state.types[0] || '提示词一'
+  }
+  
+  saveUploadSessions()
+  await saveTypesToCloud()
+  state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t]?.folderStructure || {}).length > 0)
+  buildTagMatrix(); renderHistory(); updateNavBadges(); renderOverview(); updateTypeSelectors()
+  FORMAT_KEYS.forEach(f => updateFilterPage(f))
+  showToast('已删除本批次 ✅','success')
 }
 
 // ==================== 关键词模板页面 ====================
