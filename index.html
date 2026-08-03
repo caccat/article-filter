@@ -262,9 +262,24 @@ async function downloadFromStorage(path) {
 // ==================== Supabase 数据操作 ====================
 async function loadAllFromCloud() {
   try {
-    const [typesRes, articlesRes, templatesRes, usedRes, filtersRes] = await Promise.all([
+    // Supabase 默认 limit=1000，articles 可能超过 1000 条，需要分页加载
+    let allArticles = []
+    let page = 0; const pageSize = 1000
+    while (true) {
+      const { data, error } = await supabaseClient.from('articles')
+        .select('type, format, title, city, keywords, storage_path, original_file, created_at')
+        .range(page * pageSize, (page + 1) * pageSize - 1)
+        .order('created_at', { ascending: false })
+      if (error) break
+      if (!data || data.length === 0) break
+      allArticles = allArticles.concat(data)
+      if (data.length < pageSize) break
+      page++
+    }
+    const articlesRes = { data: allArticles }
+
+    const [typesRes, templatesRes, usedRes, filtersRes] = await Promise.all([
       supabaseClient.from('types').select('name'),
-      supabaseClient.from('articles').select('type, format, title, city, keywords, storage_path, original_file, created_at'),
       supabaseClient.from('templates').select('*'),
       supabaseClient.from('used_articles').select('type, title'),
       supabaseClient.from('filter_configs').select('*')
@@ -376,7 +391,9 @@ async function saveArticlesToCloud(type, data) {
     const rows = []
     for (const fmt of FORMAT_KEYS) {
       for (const f of (data.folderStructure[fmt] || [])) {
-        rows.push({ type, format: fmt, title: f.name, city: f.city, keywords: f.keywords, storage_path: f.storage_path || '', original_file: f.original_file })
+        if (f.storage_path) {
+          rows.push({ type, format: fmt, title: f.name, city: f.city, keywords: f.keywords, storage_path: f.storage_path, original_file: f.original_file })
+        }
       }
     }
     if (rows.length > 0) {
