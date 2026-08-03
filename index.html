@@ -631,8 +631,8 @@ async function removeType(name) {
 function showSaveTemplateDialog(format) {
   let cities
   if (state.filters[format].filterMode === 'template') cities = Object.entries(state.filters[format].templateCounts || {}).filter(([c, p]) => p > 0)
-  else cities = state.filters[format].cities.filter(c => c.name.trim() && c.pct > 0).map(c => [c.name, c.pct])
-  if (!cities.length) { showToast('请先设置城市百分比','error'); return }
+  else cities = state.filters[format].cities.filter(c => c.name.trim()).map(c => [c.name, 0])
+  if (!cities.length) { showToast('请先添加城市','error'); return }
   const name = prompt('请输入模板名称：'); if (!name) return
   if (state.templates[format].find(t => t.name === name)) { showToast('模板名称已存在','error'); return }
   state.templates[format].push({ name, cities: cities.map(([city, pct]) => ({ city, pct })), filterMode: state.filters[format].filterMode })
@@ -1183,16 +1183,15 @@ function generateFilterPages() {
       '<select class="type-selector" data-format="' + fmt + '" onchange="changeFilterType(\'' + fmt + '\',this.value)" style="width:100%;padding:10px 14px;border:2px solid var(--border);border-radius:8px;font-size:14px;outline:none">' +
       state.types.map(t => '<option value="' + t + '" ' + (t === (filter.activeType || '提示词一') ? 'selected' : '') + '>' + t + '</option>').join('') +
       '</select></div>' +
-      '<div class="card"><div class="card-title"><span style="background:var(--primary);color:#fff;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;margin-right:4px">1</span> 设置城市及筛选比例</div>' +
-      '<div class="card-sub">先填写总篇数，再为各城市设置百分比（只填数字，无需%）</div>' +
+      '<div class="card"><div class="card-title"><span style="background:var(--primary);color:#fff;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;margin-right:4px">1</span> 设置总篇数 & 城市（自动分配）</div>' +
       '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">' +
       '<span style="font-size:13px;font-weight:600">📊 总篇数：</span>' +
       '<input type="number" id="totalCount-' + fmt + '" value="' + (filter.totalCount || 100) + '" min="1" onchange="updateTotalCount(\'' + fmt + '\',this.value)" style="width:100px;padding:8px 12px;border:2px solid var(--border);border-radius:8px;font-size:14px;outline:none">' +
       '<span style="font-size:13px;color:var(--text-muted)">篇</span>' +
-      '<span style="font-size:12px;color:var(--text-muted);margin-left:8px" id="pctSum-' + fmt + '">百分比总和: -</span></div>' +
+      '<span style="font-size:12px;color:var(--text-muted);margin-left:8px" id="cityCountTip-' + fmt + '">未选城市则自动分配全部城市</span></div>' +
       '<div style="display:flex;gap:10px;margin-bottom:16px"><button class="btn ' + (filter.filterMode === 'free' ? 'btn-primary' : 'btn-outline') + '" onclick="setFilterMode(\'' + fmt + '\',\'free\')" id="modeFree-' + fmt + '">✏️ 自由筛选</button>' +
       '<button class="btn ' + (filter.filterMode === 'template' ? 'btn-primary' : 'btn-outline') + '" onclick="setFilterMode(\'' + fmt + '\',\'template\')" id="modeTpl-' + fmt + '">📋 模板筛选</button></div>' +
-      '<div id="freeMode-' + fmt + '" class="' + (filter.filterMode === 'free' ? '' : 'hidden') + '"><div class="city-list" id="cityList-' + fmt + '"></div>' +
+      '<div id="freeMode-' + fmt + '" class="' + (filter.filterMode === 'free' ? '' : 'hidden') + '"><div class="card-sub">选填：限定城市范围（不限则自动分配所有城市）</div><div class="city-list" id="cityList-' + fmt + '"></div>' +
       '<div class="preset-row"><span class="preset-label">快捷预设：</span>' +
       '<button class="btn btn-sm btn-outline" onclick="presetCities(\'' + fmt + '\',\'S\')">S级城市</button>' +
       '<button class="btn btn-sm btn-outline" onclick="presetCities(\'' + fmt + '\',\'A\')">A级城市</button></div>' +
@@ -1290,32 +1289,47 @@ function calcCityPctSum(format) {
 }
 function getCityAllocations(format) {
   const totalCount = state.filters[format].totalCount || 100
-  const pctSum = calcCityPctSum(format)
-  if (pctSum <= 0) return []
   if (state.filters[format].filterMode === 'template') {
+    const pctSum = calcCityPctSum(format)
+    if (pctSum <= 0) return []
     const counts = state.filters[format].templateCounts || {}
     return TEMPLATE_CITIES.filter(c => counts[c] > 0).map(c => ({
       name: c, count: Math.max(1, Math.round(totalCount * counts[c] / pctSum))
     }))
-  } else {
-    return state.filters[format].cities.filter(c => c.name.trim() && c.pct > 0).map(c => ({
-      name: c.name, count: Math.max(1, Math.round(totalCount * c.pct / pctSum))
-    }))
   }
+  // 自由筛选：按各城市可用文章数比例自动分配
+  const type = state.filters[format].activeType || state.activeType
+  const usedSet = state.usedArticlesByType[type] || new Set()
+  const td = state.typeData[type] || {}
+  const files = ((td.folderStructure || {})[format] || []).filter(f => !usedSet.has(f.name))
+  if (!files.length) return []
+  // 统计各城市可用文章数
+  const cityAvailable = {}
+  files.forEach(f => { const city = f.city || '未知'; cityAvailable[city] = (cityAvailable[city] || 0) + 1 })
+  // 如果用户选了城市，只分配选中的城市
+  const selected = (state.filters[format].cities || []).filter(c => c.name.trim()).map(c => c.name)
+  const targetCities = selected.length > 0 ? selected : Object.keys(cityAvailable)
+  // 计算所选城市的总可用数
+  const selectedAvailable = {}
+  let sumAvail = 0
+  targetCities.forEach(c => { const a = cityAvailable[c] || 0; selectedAvailable[c] = a; sumAvail += a })
+  if (sumAvail === 0) return []
+  // 按比例分配
+  return targetCities.filter(c => selectedAvailable[c] > 0).map(c => ({
+    name: c,
+    count: Math.max(1, Math.round(totalCount * selectedAvailable[c] / sumAvail))
+  }))
 }
 function renderCityList(format) {
   const list = document.getElementById('cityList-' + format); if (!list) return
-  const totalCount = state.filters[format].totalCount || 100
-  const pctSum = calcCityPctSum(format)
-  list.innerHTML = state.filters[format].cities.map(c => {
-    const estimated = pctSum > 0 && c.pct > 0 ? Math.max(1, Math.round(totalCount * c.pct / pctSum)) : 0
+  const cities = state.filters[format].cities || []
+  list.innerHTML = cities.map(c => {
     return '<div class="city-item">' +
     '<input type="text" placeholder="城市名" value="' + c.name + '" onchange="updateCity(\'' + format + '\',' + c.id + ',\'name\',this.value)">' +
-    '<span class="city-label">占</span><input type="number" placeholder="%" value="' + c.pct + '" min="0" step="0.1" onchange="updateCity(\'' + format + '\',' + c.id + ',\'pct\',this.value);updatePctSumDisplay(\'' + format + '\')" style="width:70px">' +
-    '<span class="city-label" style="font-size:11px;color:var(--text-muted)">≈' + estimated + '篇</span>' +
-    '<button class="btn-remove-city" onclick="removeCity(\'' + format + '\',' + c.id + ');updatePctSumDisplay(\'' + format + '\')">×</button></div>'
+    '<button class="btn-remove-city" onclick="removeCity(\'' + format + '\',' + c.id + ')">×</button></div>'
   }).join('')
-  updatePctSumDisplay(format)
+  const tip = document.getElementById('cityCountTip-' + format)
+  if (tip) tip.textContent = cities.some(c => c.name.trim()) ? '已选 ' + cities.filter(c => c.name.trim()).length + ' 个城市' : '未选城市则自动分配全部城市'
 }
 function renderTemplateCityList(format) {
   const list = document.getElementById('tplCityList-' + format); if (!list) return
@@ -1481,7 +1495,7 @@ function genPreview(format) {
   const availableNames = [...new Set(files.map(f => f.name))]
   if (!availableNames.length) { showToast('没有可用的文章','error'); return }
   const validCities = getCityAllocations(format)
-  if (!validCities.length) { showToast('请设置城市百分比 > 0','error'); return }
+  if (!validCities.length) { showToast('没有符合条件的城市，请检查总篇数和可用文章','error'); return }
   const totalNeeded = validCities.reduce((s, c) => s + c.count, 0)
   if (availableNames.length < totalNeeded) { showToast('文章不足！需要' + totalNeeded + '篇，可用' + availableNames.length + '篇','error'); return }
   let allSelectedNames = [], warnings = []
@@ -1616,6 +1630,17 @@ async function exportFormat(format) {
   } catch(e) { log(format, '\n❌ 失败: ' + e.message + '\n','error'); showToast('导出失败','error'); showProgress(format, false) }
 }
 function readFile(f) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(); r.readAsArrayBuffer(f) }) }
+async function extractDocxText(buf) {
+  try {
+    const zip = await JSZip.loadAsync(buf)
+    const xml = await zip.file('word/document.xml').async('string')
+    // 去掉所有 XML 标签，保留文本节点之间的内容
+    let text = xml.replace(/<[^>]+>/g, '')
+    // 解码 XML 实体
+    text = text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    return text.trim() || '[docx 文件内容为空]'
+  } catch(e) { return '[无法解析 docx 内容: ' + e.message + ']' }
+}
 function downloadBlob(b, name) { const u = URL.createObjectURL(b), a = document.createElement('a'); a.href = u; a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(u) }, 100) }
 
 // ==================== 管理页面 ====================
@@ -1758,7 +1783,7 @@ function renderHistory() {
         if (!batchFiles.length) continue
         
         const fileList = batchFiles.map(f => '<div data-path="' + (f.storage_path || '') + '" data-name="' + (f.original_file || f.fullName) + '" style="padding:4px 8px;background:#f8fafc;border-radius:4px;margin-bottom:3px;cursor:pointer;font-size:13px">📄 ' + f.name + '</div>').join('')
-        html += '<div style="margin-top:8px"><strong>' + PLATFORM_CONFIG[fmt].icon + ' ' + PLATFORM_CONFIG[fmt].label + '</strong>（' + fmtEntries.length + '篇）</div>' +
+        html += '<div style="margin-top:8px"><strong>' + PLATFORM_CONFIG[fmt].icon + ' ' + PLATFORM_CONFIG[fmt].label + '</strong>（' + fmtNames.length + '篇）</div>' +
           '<div id="fl-' + sessionId + '-' + fmt + '" style="max-height:200px;overflow-y:auto;margin-top:4px">' + fileList + '</div>' +
           '<div id="pa-' + sessionId + '-' + fmt + '" style="display:none;margin-top:8px;padding:12px;background:#f8fafc;border-radius:8px;border:1px solid var(--border);max-height:300px;overflow:auto"></div>'
       }
@@ -1782,9 +1807,17 @@ function renderHistory() {
                 area.innerHTML = '<span style="color:var(--text-muted)">加载中...</span>'; area.style.display = 'block'
                 try {
                   const buf = await downloadFromStorage(path)
-                  let text
-                  try { text = new TextDecoder('utf-8', { fatal: false }).decode(buf) }
-                  catch { text = '(二进制文件,大小 ' + buf.byteLength + ' 字节)' }
+                  const lowerName = (name || '').toLowerCase()
+                  let text = ''
+                  if (lowerName.endsWith('.docx')) {
+                    text = await extractDocxText(buf)
+                  } else if (lowerName.endsWith('.xlsx')) {
+                    text = '[Excel 表格文件，不支持文本预览，请导出后用 Excel 打开]'
+                  } else {
+                    text = new TextDecoder('utf-8', { fatal: false }).decode(buf)
+                  }
+                  const isBinaryGarbage = !lowerName.endsWith('.docx') && !lowerName.endsWith('.xlsx') && /[\x00-\x08\x0b-\x0c\x0e-\x1f]/.test(text.slice(0, 200))
+                  if (isBinaryGarbage) text = '[二进制文件，不支持文本预览]'
                   area.innerHTML = '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">📄 ' + name + '</div><pre style="margin:0;white-space:pre-wrap;font-size:12px;line-height:1.6">' + text.replace(/</g, '&lt;') + '</pre>'
                   area.dataset.curPath = path
                 } catch(e) { area.innerHTML = '<span style="color:var(--danger)">加载失败: ' + e.message + '</span>' }
@@ -1865,43 +1898,44 @@ async function deleteUploadSession(type, sessionId) {
   const session = td.uploads.find(u => u.sessionId === sessionId)
   if (!session) return
   
-  // 用 storage_path 精确定位本批次文件（跨批次不允许误删）
+  // 从合并的 folderStructure 中移除该批次的文件（仅移除不属于其他批次的）
+  const otherSessionNames = new Set()
+  for (const s of td.uploads) {
+    if (s.sessionId === sessionId) continue
+    for (const fmt of FORMAT_KEYS) {
+      (s.formatFiles[fmt] || []).forEach(n => otherSessionNames.add(fmt + '/' + n))
+    }
+  }
+  
   for (const fmt of FORMAT_KEYS) {
-    const fmtEntries = session.formatFiles[fmt] || []
-    if (!fmtEntries.length) continue
-    const isOldFormat = typeof fmtEntries[0] === 'string'
-    const sessionSPaths = isOldFormat ? null : new Set(fmtEntries.map(e => e.storage_path).filter(Boolean))
-    
     const fmtFiles = td.folderStructure[fmt] || []
-    const toRemove = isOldFormat
-      ? fmtFiles.filter(f => fmtEntries.includes(f.name))
-      : fmtFiles.filter(f => sessionSPaths.has(f.storage_path))
-    
+    const batchNames = new Set(session.formatFiles[fmt] || [])
+    const toRemove = fmtFiles.filter(f => batchNames.has(f.name) && !otherSessionNames.has(fmt + '/' + f.name))
     // 删除 Storage 文件
     for (const f of toRemove) {
       if (f.storage_path) {
         try { await supabaseClient.storage.from(STORAGE_BUCKET).remove([f.storage_path]) } catch(e) {}
       }
     }
-    // 从 Supabase articles 表中删除（按 storage_path 精确匹配）
-    const spathsToDelete = toRemove.map(f => f.storage_path).filter(Boolean)
-    if (spathsToDelete.length > 0) {
-      for (let i = 0; i < spathsToDelete.length; i += 50) {
-        await supabaseClient.from('articles').delete().eq('type', type).eq('format', fmt).in('storage_path', spathsToDelete.slice(i, i + 50))
+    // 从 Supabase articles 表中删除
+    const namesToDelete = toRemove.map(f => f.name)
+    if (namesToDelete.length > 0) {
+      for (let i = 0; i < namesToDelete.length; i += 50) {
+        await supabaseClient.from('articles').delete().eq('type', type).eq('format', fmt).in('title', namesToDelete.slice(i, i + 50))
       }
     }
     // 从合并结构中移除
-    const removeSPaths = new Set(toRemove.map(f => f.storage_path))
-    td.folderStructure[fmt] = fmtFiles.filter(f => !removeSPaths.has(f.storage_path))
+    td.folderStructure[fmt] = fmtFiles.filter(f => !batchNames.has(f.name) || otherSessionNames.has(fmt + '/' + f.name))
     td.formatFileCounts[fmt] = (td.formatFileCounts[fmt] || 0) - toRemove.length
     if (td.formatFileCounts[fmt] <= 0) delete td.formatFileCounts[fmt]
   }
   
-  // 更新 allArticleNames（保留重复标题）
-  td.allArticleNames = []
+  // 更新 allArticleNames
+  const remainingNames = new Set()
   for (const fmt of FORMAT_KEYS) {
-    (td.folderStructure[fmt] || []).forEach(f => td.allArticleNames.push(f.name))
+    (td.folderStructure[fmt] || []).forEach(f => remainingNames.add(f.name))
   }
+  td.allArticleNames = Array.from(remainingNames)
   
   // 移除该上传批次
   td.uploads = td.uploads.filter(u => u.sessionId !== sessionId)
