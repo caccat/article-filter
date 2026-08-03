@@ -929,7 +929,28 @@ async function confirmType() {
   state.activeType = typeName
   FORMAT_KEYS.forEach(f => { state.filters[f].activeType = typeName })
   if (pendingParsedFiles) {
-    state.typeData[typeName] = pendingParsedFiles
+    // 追加合并，而不是覆盖（支持多次上传同类型文章）
+    if (!state.typeData[typeName]) {
+      state.typeData[typeName] = { folderStructure: {}, allArticleNames: [], formatFileCounts: {}, rootPath: '' }
+    }
+    const existing = state.typeData[typeName]
+    // 合并文件夹结构
+    for (const fmt of FORMAT_KEYS) {
+      if (pendingParsedFiles.folderStructure[fmt]) {
+        if (!existing.folderStructure[fmt]) existing.folderStructure[fmt] = []
+        // 避免重复：已存在同名文章的不再添加
+        const existingNames = new Set(existing.folderStructure[fmt].map(f => f.name))
+        const newFiles = pendingParsedFiles.folderStructure[fmt].filter(f => !existingNames.has(f.name))
+        existing.folderStructure[fmt].push(...newFiles)
+        existing.formatFileCounts[fmt] = (existing.formatFileCounts[fmt] || 0) + newFiles.length
+      }
+    }
+    // 合并文章名列表
+    pendingParsedFiles.allArticleNames.forEach(n => {
+      if (!existing.allArticleNames.includes(n)) existing.allArticleNames.push(n)
+    })
+    // 合并根路径
+    if (!existing.rootPath) existing.rootPath = pendingParsedFiles.rootPath
     state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t].folderStructure || {}).length > 0)
     // 保存到 Supabase（先存类型，再存文章，避免外键冲突）
     await saveTypesToCloud()
