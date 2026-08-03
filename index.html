@@ -730,13 +730,22 @@ async function processFiles(files) {
       const parts = relPath.split('/')
       if (isRootDir && parts.length >= 3) relPath = parts.slice(1).join('/')
       const pc = relPath.split('/')
-      if (pc.length < 2) continue
-      let fmtDir = pc[0].toLowerCase().trim()
       const fileName = pc[pc.length - 1]
       if (!fileName || fileName.startsWith('.')) continue
       const articleName = fileName.replace(/\.[^.]+$/, '')
-      const matchedFmt = FORMAT_KEYS.find(k => fmtDir.includes(k))
-      if (matchedFmt) fmtDir = matchedFmt
+      // 智能识别格式：先尝试从目录名匹配，失败则根据文件扩展名自动归类
+      let fmtDir = null
+      if (pc.length >= 2) {
+        const dirName = pc[0].toLowerCase().trim()
+        const matchedFmt = FORMAT_KEYS.find(k => dirName.includes(k))
+        if (matchedFmt) fmtDir = matchedFmt
+      }
+      if (!fmtDir) {
+        // 兜底：根据文件扩展名识别格式
+        const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : ''
+        const extMap = { docx: 'docx', xlsx: 'excel', ptxt: 'ptxt', txt: 'txt' }
+        fmtDir = extMap[ext] || 'txt'
+      }
       if (!structure[fmtDir]) structure[fmtDir] = []
       structure[fmtDir].push({ name: articleName, fullName: fileName, relativePath: relPath, subfolder: pc.length > 2 ? pc[1] : null, file, city: detectCity(articleName), keywords: detectKeywords(articleName), storage_path: '', original_file: fileName })
       nameSet.add(articleName)
@@ -797,9 +806,17 @@ async function doUploadBatch() {
     
     try {
       await uploadFileToStorage(file, storagePath)
-      let fmtDir = pc2[0].toLowerCase().trim()
-      const matchedFmt = FORMAT_KEYS.find(k => fmtDir.includes(k))
-      if (matchedFmt) fmtDir = matchedFmt
+      // 智能识别格式：先尝试从目录名匹配，失败则根据文件扩展名自动归类
+      let fmtDir = null
+      if (pc2.length >= 2) {
+        const dirName = pc2[0].toLowerCase().trim()
+        const matchedFmt = FORMAT_KEYS.find(k => dirName.includes(k))
+        if (matchedFmt) fmtDir = matchedFmt
+      }
+      if (!fmtDir) {
+        const extMap = { docx: 'docx', xlsx: 'excel', ptxt: 'ptxt', txt: 'txt' }
+        fmtDir = extMap[ext2] || 'txt'
+      }
       const articleName = fileName2.replace(/\.[^.]+$/, '')
       const items = structure[fmtDir] || []
       const match = items.find(it => it.name === articleName && !it.storage_path)
