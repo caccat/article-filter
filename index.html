@@ -710,6 +710,14 @@ async function init() {
   setupDragDrop()
   setupBeforeUnload()
   generateFilterPages()
+  // 全局委托：删除本批按钮（避免 inline onclick 字符串拼接被特殊字符破坏）
+  document.body.addEventListener('click', (e) => {
+    const btn = e.target.closest('.js-delete-session')
+    if (!btn) return
+    const type = btn.dataset.type
+    const sid = btn.dataset.sid
+    if (type && sid) deleteUploadSession(type, sid)
+  })
   FORMAT_KEYS.forEach(f => { addCity(f); renderTemplateCityList(f); renderTemplateList(f) })
   updateNavBadges(); renderManage()
 }
@@ -1858,7 +1866,7 @@ function renderHistory() {
       }
       
       html += '<div style="margin-top:10px;display:flex;gap:6px">' +
-        '<button class="btn btn-sm btn-danger" onclick="deleteUploadSession(\'' + type + '\',\'' + sessionId + '\')">🗑 删除本批</button></div></div>'
+        '<button class="btn btn-sm btn-danger js-delete-session" data-type="' + type.replace(/"/g, '&quot;') + '" data-sid="' + sessionId.replace(/"/g, '&quot;') + '">🗑 删除本批</button></div></div>'
       
       // 绑定点击事件
       ;(function(sid) {
@@ -1960,12 +1968,13 @@ async function deleteUploadRecord(type, fmt) {
 }
 
 async function deleteUploadSession(type, sessionId) {
-  if (!confirm('确认删除这批上传记录？文章文件也会被清除。')) return
+  console.log('[deleteUploadSession] 调用 type=' + type + ' sessionId=' + sessionId)
+  if (!confirm('确认删除这批上传记录？文章文件也会被清除。')) { console.log('[deleteUploadSession] 用户取消'); return }
   const td = state.typeData[type]
-  if (!td || !td.uploads) return
-  
+  if (!td || !td.uploads) { console.log('[deleteUploadSession] typeData 不存在或无 uploads: type=' + type, td); showToast('未找到该类型数据', 'error'); return }
+
   const session = td.uploads.find(u => u.sessionId === sessionId)
-  if (!session) return
+  if (!session) { console.log('[deleteUploadSession] 未找到 session: ' + sessionId); showToast('未找到该上传批次', 'error'); return }
   
   // 辅助：统一提取名称（兼容旧格式 string 和新格式 {name,storage_path}）
   const getEntryName = (entry) => typeof entry === 'string' ? entry : (entry && entry.name ? entry.name : '')
