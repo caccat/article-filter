@@ -570,9 +570,11 @@ async function deleteKeywordTemplate(id) {
   state.keywordTemplates = state.keywordTemplates.filter(t => t.id !== id)
   await saveKeywordTemplatesToCloud()
   // 清除引用了该模板的筛选器
+  let changed = false
   FORMAT_KEYS.forEach(f => {
-    if (state.filters[f].keywordTemplateId === id) state.filters[f].keywordTemplateId = null
+    if (state.filters[f].keywordTemplateId === id) { state.filters[f].keywordTemplateId = null; changed = true }
   })
+  if (changed) await saveFiltersToCloud()
   renderKeywordTemplatesPage()
   showToast('模板已删除', 'info')
 }
@@ -645,7 +647,8 @@ async function renameType(oldName, newName) {
   if (state.typeData[oldName]) { state.typeData[newName] = state.typeData[oldName]; delete state.typeData[oldName] }
   if (state.tagMatrixByType[oldName]) { state.tagMatrixByType[newName] = state.tagMatrixByType[oldName]; delete state.tagMatrixByType[oldName] }
   if (state.cityArticleCountByType[oldName]) { state.cityArticleCountByType[newName] = state.cityArticleCountByType[oldName]; delete state.cityArticleCountByType[oldName] }
-  await saveTypesToCloud(); updateTypeSelectors(); renderManage()
+  await Promise.all([saveTypesToCloud(), saveUsedToCloud()])
+  updateTypeSelectors(); renderManage()
   FORMAT_KEYS.forEach(f => updateFilterPage(f)); renderOverview()
   showToast('已重命名为「' + newName + '」✅','success')
 }
@@ -655,8 +658,8 @@ async function removeType(name) {
   delete state.typeData[name]; delete state.tagMatrixByType[name]; delete state.cityArticleCountByType[name]
   if (state.activeType === name) state.activeType = state.types[0] || '提示词一'
   if (state.types.length === 0) { state.types.push('提示词一'); state.usedArticlesByType['提示词一'] = new Set() }
-  state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t].folderStructure || {}).length > 0)
-  await Promise.all([saveTypesToCloud(), supabaseClient.from('articles').delete().eq('type', name), supabaseClient.from('types').delete().eq('name', name)])
+  state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t]?.folderStructure || {}).length > 0)
+  await Promise.all([saveTypesToCloud(), saveUsedToCloud(), supabaseClient.from('articles').delete().eq('type', name), supabaseClient.from('types').delete().eq('name', name)])
   updateTypeSelectors(); renderManage()
   FORMAT_KEYS.forEach(f => updateFilterPage(f)); renderOverview()
   showToast('类型已删除','info')
@@ -1145,11 +1148,21 @@ function updateUploadUI() {
 }
 async function resetUpload() {
   state.typeData = {}; state.uploaded = false
+  // 清空所有已导出记录（因为所有文章数据都没了）
+  state.usedArticlesByType = {}
+  state.tagMatrixByType = {}; state.cityArticleCountByType = {}
   document.getElementById('uploadZone').classList.remove('has-files')
   document.getElementById('uploadSuccess').classList.remove('visible')
   document.getElementById('uploadBadge').textContent = '必做'
   document.getElementById('folderInput').value = ''
-  renderOverview(); updateNavBadges(); switchPage('upload')
+  // 同步清空云端数据
+  await Promise.all([
+    saveTypesToCloud(),
+    saveUsedToCloud(),
+    saveUploadSessions(),
+    supabaseClient.from('articles').delete().neq('type', '__none__')
+  ])
+  renderOverview(); updateNavBadges(); renderHistory(); switchPage('upload')
 }
 
 // ==================== 热力图 ====================
@@ -1317,15 +1330,15 @@ function toggleTitleFilter(format) {
 function addCity(format, name, pct) {
   state.filters[format].cities.push({ id: ++cityIdCounter, name: name || '', pct: parseFloat(pct) || 0 })
   renderCityList(format)
+  saveFiltersToCloud()
 }
-function removeCity(format, id) { state.filters[format].cities = state.filters[format].cities.filter(c => c.id !== id); renderCityList(format) }
-function updateCity(format, id, field, value) { const c = state.filters[format].cities.find(x => x.id === id); if (c) c[field] = field === 'pct' ? (parseFloat(value) || 0) : value }
+function removeCity(format, id) { state.filters[format].cities = state.filters[format].cities.filter(c => c.id !== id); renderCityList(format); saveFiltersToCloud() }
+function updateCity(format, id, field, value) { const c = state.filters[format].cities.find(x => x.id === id); if (c) { c[field] = field === 'pct' ? (parseFloat(value) || 0) : value; saveFiltersToCloud() } }
 function updateTotalCount(format, value) { state.filters[format].totalCount = parseInt(value) || 100; saveFiltersToCloud() }
 function presetCities(format, grade) {
   state.filters[format].cities = []
   const cities = grade === 'S' ? S_CITIES : A_CITIES
   cities.forEach(n => addCity(format, n, 0))
-  saveFiltersToCloud()
   showToast('已预设 ' + cities.length + ' 个城市（' + (grade === 'S' ? 'S级' : 'A级') + '）', 'info')
 }
 function calcCityPctSum(format) {
