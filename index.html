@@ -1660,6 +1660,25 @@ async function exportFormat(format) {
     log(format, '\n✅ 导出成功！' + processed + ' 个文件\n','success')
     showToast('「' + cfg.label + '」导出成功!','success')
     assignedNames.forEach(n => usedSet.add(n))
+    // 导出后删除已导出文章的数据（typeData + Supabase articles），避免后续重新上传被去重拒绝
+    const exportedTitles = [...assignedNames]
+    if (exportedTitles.length > 0) {
+      // 从 typeData 中移除已导出的文件
+      const fmtFiles = td.folderStructure[format] || []
+      const remaining = fmtFiles.filter(f => !exportedTitles.includes(f.name))
+      td.folderStructure[format] = remaining
+      // 更新 allArticleNames（只去重移除）
+      td.allArticleNames = td.allArticleNames.filter(n => !exportedTitles.includes(n))
+      // 更新 formatFileCounts
+      td.formatFileCounts[format] = remaining.length
+      // 更新 uploaded 状态
+      state.uploaded = Object.keys(state.typeData).some(t =>
+        Object.keys(state.typeData[t].folderStructure || {}).some(f => (state.typeData[t].folderStructure[f] || []).length > 0))
+      // 同步删除 Supabase articles 表
+      for (const title of exportedTitles) {
+        await supabaseClient.from('articles').delete().eq('type', type).eq('format', format).eq('title', title)
+      }
+    }
     await saveUsedToCloud()
     saveStateToStorage(); updateFilterPage(format); updateNavBadges(); renderOverview()
     buildTagMatrix(); renderHeatmap()
