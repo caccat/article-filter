@@ -1668,8 +1668,12 @@ async function exportFormat(format) {
       const fmtFiles = td.folderStructure[format] || []
       const remaining = fmtFiles.filter(f => !exportedTitles.includes(f.name))
       td.folderStructure[format] = remaining
-      // 更新 allArticleNames
-      td.allArticleNames = td.allArticleNames.filter(n => !exportedTitles.includes(n))
+      // 更新 allArticleNames（基于剩余 folderStructure 重新计算，区分格式）
+      const remainingNames = new Set()
+      for (const fmt of FORMAT_KEYS) {
+        (td.folderStructure[fmt] || []).forEach(f => remainingNames.add(f.name))
+      }
+      td.allArticleNames = Array.from(remainingNames)
       // 更新 formatFileCounts
       td.formatFileCounts[format] = remaining.length
       // 更新 uploaded 状态
