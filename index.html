@@ -1066,8 +1066,12 @@ async function confirmType() {
       (pendingParsedFiles.folderStructure[fmt] || []).forEach(f => newPaths.add(fmt + '/' + f.name))
     }
     // 如果新上传的每条路径都在已有数据中，说明是重复上传
+    console.log('[confirmType] type=' + typeName + ' existingPaths=' + existingPaths.size + ' newPaths=' + newPaths.size)
     const allNewExist = newPaths.size > 0 && [...newPaths].every(p => existingPaths.has(p))
     if (allNewExist) {
+      // 打印匹配情况帮助排查
+      const overlap = [...newPaths].filter(p => existingPaths.has(p))
+      console.log('[confirmType] 拒绝上传 - 重复路径前10条:', overlap.slice(0, 10))
       showToast('⚠️ 这批文章已经上传过了，跳过重复文件', 'info')
       pendingParsedFiles = null
       updateTypeSelectors()
@@ -1680,9 +1684,14 @@ async function exportFormat(format) {
       state.uploaded = Object.keys(state.typeData).some(t =>
         Object.keys(state.typeData[t].folderStructure || {}).some(f => (state.typeData[t].folderStructure[f] || []).length > 0))
       // 同步删除 Supabase articles 表
+      console.log('[exportFormat] 开始删除 Supabase articles: type=' + type + ' format=' + format + ' count=' + exportedTitles.length)
+      let deletedCount = 0
       for (const title of exportedTitles) {
-        await supabaseClient.from('articles').delete().eq('type', type).eq('format', format).eq('title', title)
+        const { error } = await supabaseClient.from('articles').delete().eq('type', type).eq('format', format).eq('title', title)
+        if (!error) deletedCount++
+        else console.error('[exportFormat] 删除失败:', title, error)
       }
+      console.log('[exportFormat] Supabase 删除完成: ' + deletedCount + '/' + exportedTitles.length)
     }
     await saveUsedToCloud()
     saveStateToStorage(); updateFilterPage(format); updateNavBadges(); renderOverview()
