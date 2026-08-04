@@ -291,7 +291,6 @@ async function loadAllFromCloud() {
     if (articlesRes.data) articlesRes.data.forEach(a => typeSet.add(a.type))
     if (typeSet.size === 0) typeSet.add('提示词一')
     state.types = Array.from(typeSet)
-    if (!state.types.includes('提示词一')) state.types.unshift('提示词一')
     state.types.forEach(t => { if (!state.usedArticlesByType[t]) state.usedArticlesByType[t] = new Set() })
     // 加载已用文章
     if (usedRes.data) {
@@ -338,6 +337,14 @@ async function loadAllFromCloud() {
         Object.keys(state.typeData[t].folderStructure).forEach(fmt => {
           console.log('[loadAllFromCloud] type=' + t + ' format=' + fmt + ' count=' + state.typeData[t].folderStructure[fmt].length)
         })
+      })
+    }
+    // 确保 activeType 指向有数据的类型（处理旧配置或空类型残留的情况）
+    const typesWithData = state.types.filter(t => state.typeData[t])
+    if (typesWithData.length > 0) {
+      if (!typesWithData.includes(state.activeType)) state.activeType = typesWithData[0]
+      FORMAT_KEYS.forEach(fmt => {
+        if (!typesWithData.includes(state.filters[fmt].activeType)) state.filters[fmt].activeType = typesWithData[0]
       })
     }
     // 从 localStorage 恢复上传批次记录；旧数据没有记录时按创建时间自动重建
