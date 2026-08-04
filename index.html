@@ -1956,9 +1956,21 @@ async function deleteUploadRecord(type, fmt) {
         }
       }
       delete td.folderStructure[fmt]
+      // 清理已导出记录：只保留还存在的文章名
+      const usedSet = state.usedArticlesByType[type]
+      if (usedSet) {
+        const remainingNames = new Set()
+        for (const f of FORMAT_KEYS) {
+          (td.folderStructure[f] || []).forEach(x => remainingNames.add(x.name))
+        }
+        for (const name of Array.from(usedSet)) {
+          if (!remainingNames.has(name)) usedSet.delete(name)
+        }
+      }
       if (!Object.keys(td.folderStructure).length) delete state.typeData[type]
     }
     await supabaseClient.from('articles').delete().eq('type', type).eq('format', fmt)
+    await saveUsedToCloud()
   }
   saveUploadSessions()
   state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t]?.folderStructure || {}).length > 0)
@@ -2023,6 +2035,16 @@ async function deleteUploadSession(type, sessionId) {
     }
     td.allArticleNames = Array.from(remainingNames)
 
+    // 同步清理已导出记录：只保留还存在的文章名
+    const usedSet = state.usedArticlesByType[type]
+    if (usedSet) {
+      const before = usedSet.size
+      for (const name of Array.from(usedSet)) {
+        if (!remainingNames.has(name)) usedSet.delete(name)
+      }
+      if (usedSet.size !== before) console.log('[deleteUploadSession] 清理已导出记录: ' + before + ' -> ' + usedSet.size)
+    }
+
     // 移除该上传批次
     td.uploads = td.uploads.filter(u => u.sessionId !== sessionId)
 
@@ -2036,6 +2058,7 @@ async function deleteUploadSession(type, sessionId) {
 
     saveUploadSessions()
     await saveTypesToCloud()
+    await saveUsedToCloud()
     state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t]?.folderStructure || {}).length > 0)
     buildTagMatrix(); renderHistory(); updateNavBadges(); renderOverview(); updateTypeSelectors()
     FORMAT_KEYS.forEach(f => updateFilterPage(f))
