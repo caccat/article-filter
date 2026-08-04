@@ -1953,23 +1953,25 @@ async function changeUploadType(type, fmt) {
 
 async function deleteUploadRecord(type, fmt) {
   if (!confirm('确认删除「' + type + '」' + (fmt !== 'all' ? '的' + PLATFORM_CONFIG[fmt]?.label : '') + ' 的所有上传记录？')) return
+  showToast('正在删除中…', 'info')
+
+  // === 第一阶段：立即更新本地状态和 UI ===
+  const td = state.typeData[type]
+  const storagePaths = []
   if (fmt === 'all') {
+    if (td && td.folderStructure) {
+      for (const f of FORMAT_KEYS) {
+        (td.folderStructure[f] || []).forEach(x => { if (x.storage_path) storagePaths.push(x.storage_path) })
+      }
+    }
     delete state.typeData[type]
     delete state.usedArticlesByType[type]
-    await supabaseClient.from('articles').delete().eq('type', type)
-    await saveUsedToCloud()
   } else {
-    const td = state.typeData[type]
     if (td && td.folderStructure) {
-      // 删除 Storage 中的文件
       const files = td.folderStructure[fmt] || []
-      for (const f of files) {
-        if (f.storage_path) {
-          try { await supabaseClient.storage.from(STORAGE_BUCKET).remove([f.storage_path]) } catch(e) {}
-        }
-      }
+      files.forEach(x => { if (x.storage_path) storagePaths.push(x.storage_path) })
       delete td.folderStructure[fmt]
-      // 清理已导出记录：只保留还存在的文章名
+      // 本地：清理已导出记录
       const usedSet = state.usedArticlesByType[type]
       if (usedSet) {
         const remainingNames = new Set()
@@ -1982,14 +1984,34 @@ async function deleteUploadRecord(type, fmt) {
       }
       if (!Object.keys(td.folderStructure).length) delete state.typeData[type]
     }
-    await supabaseClient.from('articles').delete().eq('type', type).eq('format', fmt)
-    await saveUsedToCloud()
   }
-  saveUploadSessions()
+
   state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t]?.folderStructure || {}).length > 0)
+  saveUploadSessions()
   buildTagMatrix(); renderHistory(); updateNavBadges(); renderOverview()
   FORMAT_KEYS.forEach(f => updateFilterPage(f))
-  showToast('已删除 ✅','success')
+
+  // === 第二阶段：异步执行云端删除 ===
+  try {
+    for (const path of storagePaths) {
+      try { await supabaseClient.storage.from(STORAGE_BUCKET).remove([path]) } catch(e) {}
+    }
+    if (fmt === 'all') {
+      await Promise.all([
+        supabaseClient.from('articles').delete().eq('type', type),
+        saveUsedToCloud()
+      ])
+    } else {
+      await Promise.all([
+        supabaseClient.from('articles').delete().eq('type', type).eq('format', fmt),
+        saveUsedToCloud()
+      ])
+    }
+  } catch (cloudErr) {
+    console.error('[deleteUploadRecord] 云端清理异常（本地已删除）:', cloudErr)
+  }
+
+  showToast('已删除「' + type + '」' + (fmt !== 'all' ? ' ' + PLATFORM_CONFIG[fmt]?.label : '') + ' 的全部记录 ✅', 'success')
 }
 
 async function deleteUploadSession(type, sessionId) {
@@ -2001,11 +2023,12 @@ async function deleteUploadSession(type, sessionId) {
   const session = td.uploads.find(u => u.sessionId === sessionId)
   if (!session) { console.log('[deleteUploadSession] 未找到 session: ' + sessionId); showToast('未找到该上传批次', 'error'); return }
 
+  showToast('正在删除中…', 'info')
+
+  // === 第一阶段：立即更新本地状态和 UI（乐观更新） ===
   try {
-    // 辅助：统一提取名称（兼容旧格式 string 和新格式 {name,storage_path}）
     const getEntryName = (entry) => typeof entry === 'string' ? entry : (entry && entry.name ? entry.name : '')
 
-    // 从合并的 folderStructure 中移除该批次的文件（仅移除不属于其他批次的）
     const otherSessionNames = new Set()
     for (const s of td.uploads) {
       if (s.sessionId === sessionId) continue
@@ -2014,68 +2037,85 @@ async function deleteUploadSession(type, sessionId) {
       }
     }
 
+    // 收集需要云端删除的数据，稍后异步执行
+    const cloudTasks = []
     for (const fmt of FORMAT_KEYS) {
       const fmtFiles = td.folderStructure[fmt] || []
       const batchNames = new Set((session.formatFiles[fmt] || []).map(n => getEntryName(n)))
       const toRemove = fmtFiles.filter(f => batchNames.has(f.name) && !otherSessionNames.has(fmt + '/' + f.name))
-      console.log('[deleteUploadSession] fmt=' + fmt + ' folderStructure=' + fmtFiles.length + ' batchNames=' + batchNames.size + ' toRemove=' + toRemove.length)
-      // 删除 Storage 文件
-      for (const f of toRemove) {
-        if (f.storage_path) {
-          try { await supabaseClient.storage.from(STORAGE_BUCKET).remove([f.storage_path]) } catch(e) {}
-        }
+      // 收集 Storage 删除路径
+      const storagePaths = toRemove.filter(f => f.storage_path).map(f => f.storage_path)
+      if (storagePaths.length > 0) {
+        cloudTasks.push({ kind: 'storage', paths: storagePaths })
       }
-      // 从 Supabase articles 表中删除
+      // 收集 Supabase 删除标题
       const namesToDelete = toRemove.map(f => f.name)
       if (namesToDelete.length > 0) {
-        for (let i = 0; i < namesToDelete.length; i += 50) {
-          const chunk = namesToDelete.slice(i, i + 50)
-          console.log('[deleteUploadSession] 删除 Supabase articles: fmt=' + fmt + ' chunkSize=' + chunk.length)
-          const { error } = await supabaseClient.from('articles').delete().eq('type', type).eq('format', fmt).in('title', chunk)
-          if (error) console.error('[deleteUploadSession] Supabase 删除失败:', fmt, error)
-        }
+        cloudTasks.push({ kind: 'articles', type, fmt, names: namesToDelete })
       }
-      // 从合并结构中移除
+      // 本地：从合并结构中移除
       td.folderStructure[fmt] = fmtFiles.filter(f => !batchNames.has(f.name) || otherSessionNames.has(fmt + '/' + f.name))
       td.formatFileCounts[fmt] = (td.formatFileCounts[fmt] || 0) - toRemove.length
       if (td.formatFileCounts[fmt] <= 0) delete td.formatFileCounts[fmt]
     }
 
-    // 更新 allArticleNames
+    // 本地：更新 allArticleNames
     const remainingNames = new Set()
     for (const fmt of FORMAT_KEYS) {
       (td.folderStructure[fmt] || []).forEach(f => remainingNames.add(f.name))
     }
     td.allArticleNames = Array.from(remainingNames)
 
-    // 同步清理已导出记录：只保留还存在的文章名
+    // 本地：清理已导出记录
     const usedSet = state.usedArticlesByType[type]
     if (usedSet) {
-      const before = usedSet.size
       for (const name of Array.from(usedSet)) {
         if (!remainingNames.has(name)) usedSet.delete(name)
       }
-      if (usedSet.size !== before) console.log('[deleteUploadSession] 清理已导出记录: ' + before + ' -> ' + usedSet.size)
     }
 
-    // 移除该上传批次
+    // 本地：移除该上传批次
     td.uploads = td.uploads.filter(u => u.sessionId !== sessionId)
 
     // 如果所有文件夹结构都空了，删除该类型
+    let typeDeleted = false
     if (!Object.keys(td.folderStructure).some(fmt => (td.folderStructure[fmt] || []).length > 0)) {
       delete state.typeData[type]
       delete state.usedArticlesByType[type]
       state.types = state.types.filter(t => t !== type)
       if (state.activeType === type) state.activeType = state.types[0] || '提示词一'
+      typeDeleted = true
     }
 
-    saveUploadSessions()
-    await saveTypesToCloud()
-    await saveUsedToCloud()
     state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t]?.folderStructure || {}).length > 0)
+    // 立即刷新 UI
+    saveUploadSessions()
     buildTagMatrix(); renderHistory(); updateNavBadges(); renderOverview(); updateTypeSelectors()
     FORMAT_KEYS.forEach(f => updateFilterPage(f))
-    showToast('已删除本批次 ✅','success')
+
+    // === 第二阶段：异步执行云端删除 ===
+    try {
+      for (const task of cloudTasks) {
+        if (task.kind === 'storage') {
+          for (const path of task.paths) {
+            try { await supabaseClient.storage.from(STORAGE_BUCKET).remove([path]) } catch(e) {}
+          }
+        } else if (task.kind === 'articles') {
+          const { type: t, fmt: f, names } = task
+          for (let i = 0; i < names.length; i += 50) {
+            await supabaseClient.from('articles').delete().eq('type', t).eq('format', f).in('title', names.slice(i, i + 50))
+          }
+        }
+      }
+      await Promise.all([saveTypesToCloud(), saveUsedToCloud()])
+      if (typeDeleted) {
+        await Promise.all([supabaseClient.from('articles').delete().eq('type', type), supabaseClient.from('types').delete().eq('name', type)])
+      }
+    } catch (cloudErr) {
+      console.error('[deleteUploadSession] 云端清理异常（本地已删除）:', cloudErr)
+    }
+
+    showToast('已删除本批次 ✅', 'success')
     console.log('[deleteUploadSession] 完成 type=' + type + ' sessionId=' + sessionId)
   } catch (e) {
     console.error('[deleteUploadSession] 异常:', e)
