@@ -1659,15 +1659,16 @@ async function exportFormat(format) {
     completeProgress(format)
     log(format, '\n✅ 导出成功！' + processed + ' 个文件\n','success')
     showToast('「' + cfg.label + '」导出成功!','success')
-    assignedNames.forEach(n => usedSet.add(n))
     // 导出后删除已导出文章的数据（typeData + Supabase articles），避免后续重新上传被去重拒绝
     const exportedTitles = [...assignedNames]
     if (exportedTitles.length > 0) {
+      // 从 usedSet 中移除已导出文章（数据已删除，不应再阻止重新上传后的导出）
+      exportedTitles.forEach(n => usedSet.delete(n))
       // 从 typeData 中移除已导出的文件
       const fmtFiles = td.folderStructure[format] || []
       const remaining = fmtFiles.filter(f => !exportedTitles.includes(f.name))
       td.folderStructure[format] = remaining
-      // 更新 allArticleNames（只去重移除）
+      // 更新 allArticleNames
       td.allArticleNames = td.allArticleNames.filter(n => !exportedTitles.includes(n))
       // 更新 formatFileCounts
       td.formatFileCounts[format] = remaining.length
