@@ -1967,18 +1967,21 @@ async function deleteUploadSession(type, sessionId) {
   const session = td.uploads.find(u => u.sessionId === sessionId)
   if (!session) return
   
+  // 辅助：统一提取名称（兼容旧格式 string 和新格式 {name,storage_path}）
+  const getEntryName = (entry) => typeof entry === 'string' ? entry : (entry && entry.name ? entry.name : '')
+  
   // 从合并的 folderStructure 中移除该批次的文件（仅移除不属于其他批次的）
   const otherSessionNames = new Set()
   for (const s of td.uploads) {
     if (s.sessionId === sessionId) continue
     for (const fmt of FORMAT_KEYS) {
-      (s.formatFiles[fmt] || []).forEach(n => otherSessionNames.add(fmt + '/' + n))
+      (s.formatFiles[fmt] || []).forEach(n => otherSessionNames.add(fmt + '/' + getEntryName(n)))
     }
   }
   
   for (const fmt of FORMAT_KEYS) {
     const fmtFiles = td.folderStructure[fmt] || []
-    const batchNames = new Set(session.formatFiles[fmt] || [])
+    const batchNames = new Set((session.formatFiles[fmt] || []).map(n => getEntryName(n)))
     const toRemove = fmtFiles.filter(f => batchNames.has(f.name) && !otherSessionNames.has(fmt + '/' + f.name))
     // 删除 Storage 文件
     for (const f of toRemove) {
