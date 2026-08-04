@@ -310,6 +310,7 @@ async function loadAllFromCloud() {
     if (filtersRes.data) {
       filtersRes.data.forEach(f => {
         if (state.filters[f.format]) {
+          if (f.type) state.filters[f.format].activeType = f.type
           state.filters[f.format].filterMode = f.filter_mode || 'free'
           state.filters[f.format].cities = f.cities || []
           state.filters[f.format].templateCounts = f.template_counts || {}
@@ -332,6 +333,12 @@ async function loadAllFromCloud() {
         state.typeData[a.type].formatFileCounts[a.format] = (state.typeData[a.type].formatFileCounts[a.format] || 0) + 1
       })
       state.uploaded = Object.keys(state.typeData).length > 0
+      console.log('[loadAllFromCloud] articles loaded:', articlesRes.data.length, 'types:', state.types, 'typeData keys:', Object.keys(state.typeData))
+      Object.keys(state.typeData).forEach(t => {
+        Object.keys(state.typeData[t].folderStructure).forEach(fmt => {
+          console.log('[loadAllFromCloud] type=' + t + ' format=' + fmt + ' count=' + state.typeData[t].folderStructure[fmt].length)
+        })
+      })
     }
     // 从 localStorage 恢复上传批次记录；旧数据没有记录时按创建时间自动重建
     loadUploadSessions()
@@ -598,8 +605,12 @@ FORMAT_KEYS.forEach(f => {
 // ==================== 类型选择器更新 ====================
 function updateTypeSelectors() {
   document.querySelectorAll('.type-selector').forEach(sel => {
-    const cur = sel.value; sel.innerHTML = state.types.map(t => '<option value="' + t + '">' + t + '</option>').join('')
-    sel.value = state.types.includes(cur) ? cur : state.types[0]
+    const fmt = sel.dataset.format
+    const cur = sel.value
+    sel.innerHTML = state.types.map(t => '<option value="' + t + '">' + t + '</option>').join('')
+    const next = state.types.includes(cur) ? cur : state.types[0]
+    sel.value = next
+    if (fmt && state.filters[fmt]) state.filters[fmt].activeType = next
   })
   document.querySelectorAll('.type-selector-nomodal').forEach(sel => {
     const cur = sel.value; sel.innerHTML = state.types.map(t => '<option value="' + t + '">' + t + '</option>').join('')
@@ -1392,6 +1403,7 @@ function updateFilterPage(format) {
   const td = state.typeData[type] || {}
   const files = (td.folderStructure || {})[format] || []
   const available = files.filter(f => !usedSet.has(f.name)).length
+  console.log('[updateFilterPage] format=' + format + ' activeType=' + type + ' files.length=' + files.length + ' available=' + available + ' usedSet.size=' + usedSet.size)
   availEl.textContent = available
   usedEl.textContent = files.length - available
   // 刷新总数输入框
