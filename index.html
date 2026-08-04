@@ -656,7 +656,7 @@ async function removeType(name) {
   if (state.activeType === name) state.activeType = state.types[0] || '提示词一'
   if (state.types.length === 0) { state.types.push('提示词一'); state.usedArticlesByType['提示词一'] = new Set() }
   state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t].folderStructure || {}).length > 0)
-  await Promise.all([saveTypesToCloud(), supabaseClient.from('articles').delete().eq('type', name)])
+  await Promise.all([saveTypesToCloud(), supabaseClient.from('articles').delete().eq('type', name), supabaseClient.from('types').delete().eq('name', name)])
   updateTypeSelectors(); renderManage()
   FORMAT_KEYS.forEach(f => updateFilterPage(f)); renderOverview()
   showToast('类型已删除','info')
