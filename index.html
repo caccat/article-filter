@@ -1975,66 +1975,76 @@ async function deleteUploadSession(type, sessionId) {
 
   const session = td.uploads.find(u => u.sessionId === sessionId)
   if (!session) { console.log('[deleteUploadSession] 未找到 session: ' + sessionId); showToast('未找到该上传批次', 'error'); return }
-  
-  // 辅助：统一提取名称（兼容旧格式 string 和新格式 {name,storage_path}）
-  const getEntryName = (entry) => typeof entry === 'string' ? entry : (entry && entry.name ? entry.name : '')
-  
-  // 从合并的 folderStructure 中移除该批次的文件（仅移除不属于其他批次的）
-  const otherSessionNames = new Set()
-  for (const s of td.uploads) {
-    if (s.sessionId === sessionId) continue
+
+  try {
+    // 辅助：统一提取名称（兼容旧格式 string 和新格式 {name,storage_path}）
+    const getEntryName = (entry) => typeof entry === 'string' ? entry : (entry && entry.name ? entry.name : '')
+
+    // 从合并的 folderStructure 中移除该批次的文件（仅移除不属于其他批次的）
+    const otherSessionNames = new Set()
+    for (const s of td.uploads) {
+      if (s.sessionId === sessionId) continue
+      for (const fmt of FORMAT_KEYS) {
+        (s.formatFiles[fmt] || []).forEach(n => otherSessionNames.add(fmt + '/' + getEntryName(n)))
+      }
+    }
+
     for (const fmt of FORMAT_KEYS) {
-      (s.formatFiles[fmt] || []).forEach(n => otherSessionNames.add(fmt + '/' + getEntryName(n)))
-    }
-  }
-  
-  for (const fmt of FORMAT_KEYS) {
-    const fmtFiles = td.folderStructure[fmt] || []
-    const batchNames = new Set((session.formatFiles[fmt] || []).map(n => getEntryName(n)))
-    const toRemove = fmtFiles.filter(f => batchNames.has(f.name) && !otherSessionNames.has(fmt + '/' + f.name))
-    // 删除 Storage 文件
-    for (const f of toRemove) {
-      if (f.storage_path) {
-        try { await supabaseClient.storage.from(STORAGE_BUCKET).remove([f.storage_path]) } catch(e) {}
+      const fmtFiles = td.folderStructure[fmt] || []
+      const batchNames = new Set((session.formatFiles[fmt] || []).map(n => getEntryName(n)))
+      const toRemove = fmtFiles.filter(f => batchNames.has(f.name) && !otherSessionNames.has(fmt + '/' + f.name))
+      console.log('[deleteUploadSession] fmt=' + fmt + ' folderStructure=' + fmtFiles.length + ' batchNames=' + batchNames.size + ' toRemove=' + toRemove.length)
+      // 删除 Storage 文件
+      for (const f of toRemove) {
+        if (f.storage_path) {
+          try { await supabaseClient.storage.from(STORAGE_BUCKET).remove([f.storage_path]) } catch(e) {}
+        }
       }
-    }
-    // 从 Supabase articles 表中删除
-    const namesToDelete = toRemove.map(f => f.name)
-    if (namesToDelete.length > 0) {
-      for (let i = 0; i < namesToDelete.length; i += 50) {
-        await supabaseClient.from('articles').delete().eq('type', type).eq('format', fmt).in('title', namesToDelete.slice(i, i + 50))
+      // 从 Supabase articles 表中删除
+      const namesToDelete = toRemove.map(f => f.name)
+      if (namesToDelete.length > 0) {
+        for (let i = 0; i < namesToDelete.length; i += 50) {
+          const chunk = namesToDelete.slice(i, i + 50)
+          console.log('[deleteUploadSession] 删除 Supabase articles: fmt=' + fmt + ' chunkSize=' + chunk.length)
+          const { error } = await supabaseClient.from('articles').delete().eq('type', type).eq('format', fmt).in('title', chunk)
+          if (error) console.error('[deleteUploadSession] Supabase 删除失败:', fmt, error)
+        }
       }
+      // 从合并结构中移除
+      td.folderStructure[fmt] = fmtFiles.filter(f => !batchNames.has(f.name) || otherSessionNames.has(fmt + '/' + f.name))
+      td.formatFileCounts[fmt] = (td.formatFileCounts[fmt] || 0) - toRemove.length
+      if (td.formatFileCounts[fmt] <= 0) delete td.formatFileCounts[fmt]
     }
-    // 从合并结构中移除
-    td.folderStructure[fmt] = fmtFiles.filter(f => !batchNames.has(f.name) || otherSessionNames.has(fmt + '/' + f.name))
-    td.formatFileCounts[fmt] = (td.formatFileCounts[fmt] || 0) - toRemove.length
-    if (td.formatFileCounts[fmt] <= 0) delete td.formatFileCounts[fmt]
+
+    // 更新 allArticleNames
+    const remainingNames = new Set()
+    for (const fmt of FORMAT_KEYS) {
+      (td.folderStructure[fmt] || []).forEach(f => remainingNames.add(f.name))
+    }
+    td.allArticleNames = Array.from(remainingNames)
+
+    // 移除该上传批次
+    td.uploads = td.uploads.filter(u => u.sessionId !== sessionId)
+
+    // 如果所有文件夹结构都空了，删除该类型
+    if (!Object.keys(td.folderStructure).some(fmt => (td.folderStructure[fmt] || []).length > 0)) {
+      delete state.typeData[type]
+      delete state.usedArticlesByType[type]
+      state.types = state.types.filter(t => t !== type)
+      if (state.activeType === type) state.activeType = state.types[0] || '提示词一'
+    }
+
+    saveUploadSessions()
+    await saveTypesToCloud()
+    state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t]?.folderStructure || {}).length > 0)
+    buildTagMatrix(); renderHistory(); updateNavBadges(); renderOverview(); updateTypeSelectors()
+    FORMAT_KEYS.forEach(f => updateFilterPage(f))
+    showToast('已删除本批次 ✅','success')
+    console.log('[deleteUploadSession] 完成 type=' + type + ' sessionId=' + sessionId)
+  } catch (e) {
+    console.error('[deleteUploadSession] 异常:', e)
+    showToast('删除失败: ' + (e.message || e), 'error')
   }
-  
-  // 更新 allArticleNames
-  const remainingNames = new Set()
-  for (const fmt of FORMAT_KEYS) {
-    (td.folderStructure[fmt] || []).forEach(f => remainingNames.add(f.name))
-  }
-  td.allArticleNames = Array.from(remainingNames)
-  
-  // 移除该上传批次
-  td.uploads = td.uploads.filter(u => u.sessionId !== sessionId)
-  
-  // 如果所有文件夹结构都空了，删除该类型
-  if (!Object.keys(td.folderStructure).some(fmt => (td.folderStructure[fmt] || []).length > 0)) {
-    delete state.typeData[type]
-    delete state.usedArticlesByType[type]
-    state.types = state.types.filter(t => t !== type)
-    if (state.activeType === type) state.activeType = state.types[0] || '提示词一'
-  }
-  
-  saveUploadSessions()
-  await saveTypesToCloud()
-  state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t]?.folderStructure || {}).length > 0)
-  buildTagMatrix(); renderHistory(); updateNavBadges(); renderOverview(); updateTypeSelectors()
-  FORMAT_KEYS.forEach(f => updateFilterPage(f))
-  showToast('已删除本批次 ✅','success')
 }
 
 // ==================== 关键词模板页面 ====================
