@@ -931,7 +931,8 @@ async function doUploadBatch() {
     const pc2 = relPath.split('/'); const fileName2 = pc2[pc2.length - 1]
     const articleName2 = fileName2.replace(/\.[^.]+$/, '')
     const ext2 = fileName2.includes('.') ? fileName2.split('.').pop() : ''
-    const storagePath = uploadId + '/' + articleName2.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 60) + '.' + ext2
+    // 用上传序号避免纯中文文件名全部被替换为下划线后发生路径碰撞
+    const storagePath = uploadId + '/' + articleName2.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50) + '_' + i + '.' + ext2
     
     try {
       await uploadFileToStorage(file, storagePath)
@@ -1654,10 +1655,13 @@ async function exportFormat(format) {
   log(format, '开始导出「' + cfg.label + '」(' + cfg.ext.toUpperCase() + ')...\n','info')
   const zip = new JSZip(); let processed = 0
   log(format, '共 ' + toExport.length + ' 个文件\n','info')
+  const addedToZip = new Set() // 防止同名条目重复写入 zip（跨批次上传可能存在重复）
   for (const a of pData.assignments) {
     log(format, '\n━━━ ' + a.city + ' (' + a.articles.length + '篇) ━━━\n','info')
     for (const art of a.articles) {
       for (const m of sourceFiles.filter(f => f.name === art && !usedSet.has(f.name))) {
+        const zipName = m.original_file || m.fullName
+        if (addedToZip.has(zipName)) continue // 跳过已写入的同名文件
         try {
           let fileContent
           if (m.storage_path) {
@@ -1667,8 +1671,9 @@ async function exportFormat(format) {
           } else {
             log(format, '  ⚠ ' + m.fullName + ': 文件不可用（请重新上传）\n','warn'); continue
           }
-          zip.file(m.original_file || m.fullName, fileContent)
-          log(format, '  ✓ ' + (m.original_file || m.fullName) + '\n','success')
+          zip.file(zipName, fileContent)
+          addedToZip.add(zipName)
+          log(format, '  ✓ ' + zipName + '\n','success')
           processed++
           updateProgress(format, processed, toExport.length, m.fullName)
           if (processed % 15 === 0) await sleep(0)
