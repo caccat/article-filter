@@ -1375,11 +1375,20 @@ function getCityAllocations(format) {
   let sumAvail = 0
   targetCities.forEach(c => { const a = cityAvailable[c] || 0; selectedAvailable[c] = a; sumAvail += a })
   if (sumAvail === 0) return []
-  // 按比例分配
-  return targetCities.filter(c => selectedAvailable[c] > 0).map(c => ({
-    name: c,
-    count: Math.max(1, Math.round(totalCount * selectedAvailable[c] / sumAvail))
-  }))
+  // 按比例分配：先取整数部分，再按小数部分从大到小补齐剩余篇数，确保总数严格等于 totalCount
+  const allocations = targetCities
+    .filter(c => selectedAvailable[c] > 0)
+    .map(c => {
+      const raw = totalCount * selectedAvailable[c] / sumAvail
+      return { name: c, raw, count: Math.floor(raw) }
+    })
+  let allocated = allocations.reduce((s, a) => s + a.count, 0)
+  let remaining = totalCount - allocated
+  if (remaining > 0) {
+    allocations.sort((a, b) => (b.raw - b.count) - (a.raw - a.count))
+    for (let i = 0; i < remaining && i < allocations.length; i++) allocations[i].count++
+  }
+  return allocations.filter(a => a.count > 0)
 }
 function renderCityList(format) {
   const list = document.getElementById('cityList-' + format); if (!list) return
