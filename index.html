@@ -641,7 +641,7 @@ const state = {
   _heatmapFormat: 'docx', _heatmapType: '全部', _manageTab: 'types'
 }
 FORMAT_KEYS.forEach(f => {
-  state.filters[f] = { activeType: '提示词一', activeTypes: [{name:'提示词一',pct:100}], filterMode: 'free', cities: [], templateCounts: {}, totalCount: 100, titleFilterOn: false, preview: null, keywordTemplateId: null }
+  state.filters[f] = { activeType: '提示词一', filterMode: 'free', cities: [], templateCounts: {}, totalCount: 100, titleFilterOn: false, preview: null, keywordTemplateId: null }
   state.templates[f] = []
   state.typeMixTemplates[f] = []
 })
@@ -1528,9 +1528,11 @@ function getActiveTypes(format) {
   if (Array.isArray(f.activeTypes) && f.activeTypes.length > 0) {
     return f.activeTypes
   }
-  // 迁移：旧格式 → 新格式
+  // 迁移：旧格式 → 新格式（同步写回，保持一致性）
   const oldName = f.activeType || state.activeType || (state.types[0] || '提示词一')
-  return [{ name: oldName, pct: 100 }]
+  const migrated = [{ name: oldName, pct: 100 }]
+  f.activeTypes = migrated
+  return migrated
 }
 function setActiveTypes(format, arr) {
   state.filters[format].activeTypes = arr.map(t => ({ name: t.name, pct: Math.max(0, Math.min(100, parseFloat(t.pct) || 0)) }))
