@@ -1763,6 +1763,28 @@ async function extractDocxText(buf) {
     return text.trim() || '[docx 文件内容为空]'
   } catch(e) { return '[无法解析 docx 内容: ' + e.message + ']' }
 }
+async function extractXlsxText(buf) {
+  try {
+    const zip = await JSZip.loadAsync(buf)
+    let text = ''
+    // 1. 读共享字符串（最常见的文本存放处）
+    if (zip.file('xl/sharedStrings.xml')) {
+      const xml = await zip.file('xl/sharedStrings.xml').async('string')
+      const matches = xml.match(/<si>[\s\S]*?<\/si>|<t[^>]*>([\s\S]*?)<\/t>/g) || []
+      text += matches.map(m => m.replace(/<[^>]+>/g, '')).join(' ') + '\n\n'
+    }
+    // 2. 读所有 sheet 的内联字符串（c/is/t）
+    const sheetFiles = Object.keys(zip.files).filter(p => /^xl\/worksheets\/sheet\d+\.xml$/.test(p))
+    for (const sp of sheetFiles) {
+      const xml = await zip.file(sp).async('string')
+      const inlineMatches = xml.match(/<is>[\s\S]*?<\/is>|<t[^>]*>([\s\S]*?)<\/t>/g) || []
+      text += '--- ' + sp.replace('xl/worksheets/', '') + ' ---\n'
+      text += inlineMatches.map(m => m.replace(/<[^>]+>/g, '')).join(' ') + '\n\n'
+    }
+    text = text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    return text.trim() || '[xlsx 内容为空]'
+  } catch(e) { return '[无法解析 xlsx 内容: ' + e.message + ']' }
+}
 function downloadBlob(b, name) { const u = URL.createObjectURL(b), a = document.createElement('a'); a.href = u; a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(u) }, 100) }
 
 // ==================== 管理页面 ====================
@@ -1934,7 +1956,7 @@ function renderHistory() {
                   if (lowerName.endsWith('.docx')) {
                     text = await extractDocxText(buf)
                   } else if (lowerName.endsWith('.xlsx')) {
-                    text = '[Excel 表格文件，不支持文本预览，请导出后用 Excel 打开]'
+                    text = await extractXlsxText(buf)
                   } else {
                     text = new TextDecoder('utf-8', { fatal: false }).decode(buf)
                   }
