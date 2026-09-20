@@ -320,6 +320,7 @@ async function loadAllFromCloud() {
           state.filters[f.format].templateCounts = f.template_counts || {}
           state.filters[f.format].titleFilterOn = f.title_filter_on || false
           state.filters[f.format].keywordTemplateId = f.keyword_template_id || null
+          state.filters[f.format].folderMode = (f.folder_mode === 'subfolder' || f.folder_mode === 'flat') ? f.folder_mode : getDefaultFolderMode(f.format)
         }
       })
     }
@@ -409,7 +410,8 @@ async function saveFiltersToCloud() {
         filter_mode: f.filterMode, cities: f.cities, template_counts: f.templateCounts || {},
         title_filter_on: f.titleFilterOn || false,
         keyword_template_id: f.keywordTemplateId || null,
-        active_types: activeTypes
+        active_types: activeTypes,
+        folder_mode: f.folderMode || getDefaultFolderMode(fmt)
       }
       const { error } = await supabaseClient.from('filter_configs').upsert(row)
       // 兼容旧表结构（无 active_types 列）：重试只写旧字段
@@ -624,6 +626,10 @@ function getActiveKeywordTemplateName(format) {
 // ==================== 全局常量 ====================
 const FORMAT_KEYS = ['docx', 'excel', 'ptxt', 'txt']
 const PLATFORM_CONFIG = { docx:{icon:'📄',label:'头条',ext:'docx'}, excel:{icon:'📊',label:'资讯文章',ext:'xlsx'}, ptxt:{icon:'📃',label:'搜狐',ext:'ptxt'}, txt:{icon:'📝',label:'网易/抖音',ext:'txt'} }
+// 每个平台的默认文件夹结构：'subfolder'（分子文件夹）/ 'flat'（不分子文件夹）
+// 头条/资讯/搜狐默认不分子文件夹；网易/抖音默认分子文件夹
+const DEFAULT_FOLDER_MODE = { docx: 'flat', excel: 'flat', ptxt: 'flat', txt: 'subfolder' }
+function getDefaultFolderMode(fmt) { return DEFAULT_FOLDER_MODE[fmt] || 'flat' }
 const S_CITIES = ['上海','北京','广州','南京','香港','新加坡','英国','美国','澳洲']
 const A_CITIES = ['深圳','重庆','苏州','成都','杭州','武汉','宁波','天津','青岛','无锡','长沙','郑州','济南','合肥','福州','泉州']
 const TEMPLATE_CITIES = [...S_CITIES, ...A_CITIES]
@@ -641,7 +647,7 @@ const state = {
   _heatmapFormat: 'docx', _heatmapType: '全部', _manageTab: 'types'
 }
 FORMAT_KEYS.forEach(f => {
-  state.filters[f] = { activeType: '提示词一', filterMode: 'free', cities: [], templateCounts: {}, totalCount: 100, titleFilterOn: false, preview: null, keywordTemplateId: null }
+  state.filters[f] = { activeType: '提示词一', activeTypes: [{name:'提示词一',pct:100}], filterMode: 'free', cities: [], templateCounts: {}, totalCount: 100, titleFilterOn: false, preview: null, keywordTemplateId: null, folderMode: getDefaultFolderMode(f) }
   state.templates[f] = []
   state.typeMixTemplates[f] = []
 })
@@ -1265,6 +1271,14 @@ function buildHeatmapTableElement(fmt, type) {
 
 // ==================== 生成筛选页面 ====================
 function changeFilterType(format, type) { state.filters[format].activeType = type; updateFilterPage(format); saveFiltersToCloud() }
+// 设置文件夹结构模式：subfolder（分子文件夹） / flat（不分子文件夹）
+function setFolderMode(format, mode) {
+  state.filters[format].folderMode = mode
+  // 重新渲染 radio 选中状态（保持 UI 同步）
+  document.querySelectorAll('input[name="folderMode-' + format + '"]').forEach(r => { r.checked = (r.value === mode) })
+  saveFiltersToCloud()
+  showToast(mode === 'subfolder' ? '已切换为分子文件夹' : '已切换为不分子文件夹', 'success')
+}
 // ==================== 多类型编辑器 ====================
 function renderTypeMixEditor(format) {
   const container = document.getElementById('typeMixEditor-' + format)
@@ -1414,6 +1428,15 @@ function generateFilterPages() {
           '</select>' +
           '<button class="btn btn-sm btn-success" onclick="showSaveTypeMixDialog(\'' + fmt + '\')">💾 保存为模板</button>' +
         '</span>' +
+      '</div>' +
+      '<div style="margin-top:12px;padding:10px 12px;background:#f8fafc;border-radius:8px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">' +
+        '<span style="font-size:13px;font-weight:600">📁 文件夹结构：</span>' +
+        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">' +
+          '<input type="radio" name="folderMode-' + fmt + '" value="subfolder" ' + (filter.folderMode === 'subfolder' ? 'checked' : '') + ' onchange="setFolderMode(\'' + fmt + '\',\'subfolder\')"> 分子文件夹（每类型一个子文件夹）' +
+        '</label>' +
+        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">' +
+          '<input type="radio" name="folderMode-' + fmt + '" value="flat" ' + (filter.folderMode === 'flat' ? 'checked' : '') + ' onchange="setFolderMode(\'' + fmt + '\',\'flat\')"> 不分子文件夹（所有文章混在一起）' +
+        '</label>' +
       '</div></div>' +
       '<div class="card"><div class="card-title"><span style="background:var(--primary);color:#fff;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;margin-right:4px">1</span> 设置总篇数 & 城市（自动分配）</div>' +
       '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">' +
@@ -2068,7 +2091,9 @@ async function exportFormat(format) {
         const key = sourceType + '::' + m.name
         if (added.has(key)) continue
         added.add(key)
-        const zipPath = g.type + '/' + (m.original_file || m.fullName)
+        // 文件夹结构：subfolder 按类型分子文件夹；flat 全部平铺（不分子文件夹）
+        const fileName = m.original_file || m.fullName
+        const zipPath = (state.filters[format].folderMode === 'flat') ? fileName : (g.type + '/' + fileName)
         tasks.push({ m, zipPath, sourceType, targetType: g.type, city: a.city })
       }
     }
