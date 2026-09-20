@@ -1663,33 +1663,51 @@ async function exportFormat(format) {
   showProgress(format, true)
   log(format, '开始导出「' + cfg.label + '」(' + cfg.ext.toUpperCase() + ')...\n','info')
   const zip = new JSZip(); let processed = 0
-  log(format, '共 ' + toExport.length + ' 个文件\n','info')
-  const addedToZip = new Set() // 防止同名条目重复写入 zip（跨批次上传可能存在重复）
+  log(format, '共 ' + toExport.length + ' 个文件，并发下载中（8 路）...\n','info')
+
+  // 先按城市打印分组（与原日志风格一致）
   for (const a of pData.assignments) {
     log(format, '\n━━━ ' + a.city + ' (' + a.articles.length + '篇) ━━━\n','info')
+  }
+
+  // 收集所有下载任务（按文章名去重）
+  const addedToZip = new Set()
+  const tasks = []
+  for (const a of pData.assignments) {
     for (const art of a.articles) {
       for (const m of sourceFiles.filter(f => f.name === art && !usedSet.has(f.name))) {
         const zipName = m.original_file || m.fullName
-        if (addedToZip.has(zipName)) continue // 跳过已写入的同名文件
-        try {
-          let fileContent
-          if (m.storage_path) {
-            fileContent = await downloadFromStorage(m.storage_path)
-          } else if (m.file) {
-            fileContent = await readFile(m.file)
-          } else {
-            log(format, '  ⚠ ' + m.fullName + ': 文件不可用（请重新上传）\n','warn'); continue
-          }
-          zip.file(zipName, fileContent)
-          addedToZip.add(zipName)
-          log(format, '  ✓ ' + zipName + '\n','success')
-          processed++
-          updateProgress(format, processed, toExport.length, m.fullName)
-          if (processed % 15 === 0) await sleep(0)
-        } catch(e) { log(format, '  ✗ ' + m.fullName + ': ' + e.message + '\n','error') }
+        if (addedToZip.has(zipName)) continue
+        addedToZip.add(zipName)
+        tasks.push({ m, zipName, city: a.city })
       }
     }
   }
+
+  // 8 路并发下载池
+  const CONCURRENCY = 8
+  let taskIdx = 0
+  async function worker() {
+    while (taskIdx < tasks.length) {
+      const t = tasks[taskIdx++]
+      try {
+        let fileContent
+        if (t.m.storage_path) {
+          fileContent = await downloadFromStorage(t.m.storage_path)
+        } else if (t.m.file) {
+          fileContent = await readFile(t.m.file)
+        } else {
+          log(format, '  ⚠ ' + t.m.fullName + ': 文件不可用（请重新上传）\n','warn'); continue
+        }
+        zip.file(t.zipName, fileContent)
+        log(format, '  ✓ [' + t.city + '] ' + t.zipName + '\n','success')
+        processed++
+        updateProgress(format, processed, tasks.length, t.m.fullName)
+        if (processed % 8 === 0) await sleep(0)
+      } catch(e) { log(format, '  ✗ ' + t.m.fullName + ': ' + e.message + '\n','error') }
+    }
+  }
+  await Promise.all(Array(Math.min(CONCURRENCY, tasks.length)).fill().map(() => worker()))
   log(format, '\n正在打包...\n','info')
   try {
     const blob = await zip.generateAsync({ type:'blob', compression:'DEFLATE', compressionOptions:{ level:6 } },
