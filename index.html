@@ -300,16 +300,20 @@ async function loadAllFromCloud() {
     }
     // 加载模板（typemix 行是"提示词比例模板"，分流到 state.typeMixTemplates）
     if (templatesRes.data) {
+      console.log('[load] templates 总数 =', templatesRes.data.length, 'typemix 行 =', templatesRes.data.filter(t => t.filter_mode === 'typemix').length)
       FORMAT_KEYS.forEach(f => state.templates[f] = [])
       FORMAT_KEYS.forEach(f => state.typeMixTemplates[f] = [])
       templatesRes.data.forEach(t => {
         if (t.filter_mode === 'typemix') {
           if (!state.typeMixTemplates[t.format]) state.typeMixTemplates[t.format] = []
           state.typeMixTemplates[t.format].push({ name: t.name, mix: t.cities || [] })
+          console.log('[load] 加载 typemix:', t.format, t.name, t.cities)
         } else if (state.templates[t.format]) {
           state.templates[t.format].push({ name: t.name, filterMode: t.filter_mode, cities: t.cities || [] })
         }
       })
+    } else {
+      console.warn('[load] templatesRes.data 为空或为 null，templatesRes =', templatesRes)
     }
     // 加载筛选配置
     if (filtersRes.data) {
@@ -430,14 +434,20 @@ async function saveTypeMixTemplatesToCloud() {
   try {
     // 复用 templates 表：filter_mode='typemix'，mix 存在 cities(jsonb) 字段里
     // 先删掉该平台所有 typemix 行，再插入当前列表
-    await supabaseClient.from('templates').delete().eq('filter_mode', 'typemix').neq('format', '_')
+    console.log('[save typemix] 待写入行数 =', Object.values(state.typeMixTemplates).reduce((s, arr) => s + (arr ? arr.length : 0), 0))
+    const delRes = await supabaseClient.from('templates').delete().eq('filter_mode', 'typemix').neq('format', '_')
+    if (delRes.error) console.error('[save typemix] delete 失败:', delRes.error)
     const rows = []
     for (const fmt of FORMAT_KEYS) {
       for (const t of (state.typeMixTemplates[fmt] || [])) {
         rows.push({ format: fmt, name: t.name, filter_mode: 'typemix', cities: t.mix || [] })
       }
     }
-    if (rows.length) await supabaseClient.from('templates').upsert(rows)
+    if (rows.length) {
+      const insRes = await supabaseClient.from('templates').upsert(rows)
+      if (insRes.error) console.error('[save typemix] upsert 失败:', insRes.error)
+      else console.log('[save typemix] 成功写入', rows.length, '行')
+    }
   } catch(e) { console.error('[saveTypeMixTemplatesToCloud]', e) }
 }
 async function saveArticlesToCloud(type, data) {
