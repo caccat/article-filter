@@ -1782,50 +1782,208 @@ function hybridKeywordFilter(titlePool, totalNeeded, keywords, greedyRatio) {
 
 // ==================== 生成预览 ====================
 function genPreview(format) {
-  const type = state.filters[format].activeType || state.activeType
-  const usedSet = state.usedArticlesByType[type] || new Set()
-  const td = state.typeData[type] || {}
-  const files = ((td.folderStructure || {})[format] || []).filter(f => !usedSet.has(f.name))
-  const availableNames = [...new Set(files.map(f => f.name))]
-  if (!availableNames.length) { showToast('没有可用的文章','error'); return }
-  const validCities = getCityAllocations(format)
-  if (!validCities.length) { showToast('没有符合条件的城市，请检查总篇数和可用文章','error'); return }
-  const totalNeeded = validCities.reduce((s, c) => s + c.count, 0)
-  if (availableNames.length < totalNeeded) { showToast('文章不足！需要' + totalNeeded + '篇，可用' + availableNames.length + '篇','error'); return }
-  let allSelectedNames = [], warnings = []
-  const nameToCity = {}; files.forEach(f => { nameToCity[f.name] = f.city })
-  const cityMap = buildCityArticleMap(availableNames, validCities, nameToCity)
-  if (state.filters[format].titleFilterOn) {
-    showToast('正在进行标题关键词优化筛选...','info')
-    const result = cityKeywordFilter(format, validCities, availableNames, cityMap, true)
-    allSelectedNames = result.allSelected; warnings = result.warnings
-  } else {
-    const result = cityKeywordFilter(format, validCities, availableNames, cityMap, false)
-    allSelectedNames = result.allSelected; warnings = result.warnings
+  // 1. 校验类型比例
+  const pctErr = validateActiveTypePct(format)
+  if (pctErr) { showToast(pctErr, 'error'); return }
+  // 2. 计算类型分配
+  const typeAllocResult = getTypeAllocations(format)
+  if (typeAllocResult.error) { showToast(typeAllocResult.error, 'error'); return }
+  const typeAllocs = typeAllocResult.allocations
+  if (!typeAllocs.length) { showToast('至少需要 1 个比例 > 0 的提示词','error'); return }
+  // 3. 对每个类型独立生成预览
+  const typeGroups = []
+  for (const ta of typeAllocs) {
+    const type = ta.name
+    const usedSet = state.usedArticlesByType[type] || new Set()
+    const td = state.typeData[type] || {}
+    const files = ((td.folderStructure || {})[format] || []).filter(f => !usedSet.has(f.name))
+    const availableNames = [...new Set(files.map(f => f.name))]
+    const noArticles = !availableNames.length
+    if (noArticles) {
+      typeGroups.push({ type, targetCount: ta.count, actualCount: 0, noArticles: true, assignments: [], warnings: [] })
+      continue
+    }
+    // 关键：每个类型独立调用 getCityAllocations(format, type)，逻辑完全复用
+    const validCities = getCityAllocations(format, type)
+    if (!validCities.length) {
+      typeGroups.push({ type, targetCount: ta.count, actualCount: 0, noArticles: true, assignments: [], warnings: [] })
+      continue
+    }
+    const nameToCity = {}; files.forEach(f => { nameToCity[f.name] = f.city })
+    const cityMap = buildCityArticleMap(availableNames, validCities, nameToCity)
+    let allSelectedNames = [], warnings = []
+    const result = state.filters[format].titleFilterOn
+      ? cityKeywordFilter(format, validCities, availableNames, cityMap, true)
+      : cityKeywordFilter(format, validCities, availableNames, cityMap, false)
+    allSelectedNames = result.allSelected
+    warnings = result.warnings
+    const assignments = weightedAssignments(allSelectedNames, validCities)
+    // 把 warnings 挂到对应城市
+    assignments.forEach(a => { a.warnings = warnings.filter(w => w.city === a.city) })
+    typeGroups.push({ type, targetCount: ta.count, actualCount: allSelectedNames.length, noArticles: false, assignments, warnings })
   }
+  state.filters[format].preview = { typeGroups }
+  renderFilterPreview(format, typeGroups); renderFilterStats(format, typeGroups); renderWarnings(format, collectAllWarnings(typeGroups))
+  const ks = document.getElementById('keywordStats-' + format); if (ks) ks.classList.add('hidden')
+  document.getElementById('btnExport-' + format).disabled = false
+  document.getElementById('btnExport-' + format).dataset.pctValidated = '1'
+  showToast('预览生成成功 ✅','success')
+}
+function weightedAssignments(allSelectedNames, validCities) {
   const assignments = []; let idx = 0
   validCities.forEach(city => {
     const list = []; for (let i = 0; i < city.count && idx < allSelectedNames.length; i++) list.push(allSelectedNames[idx++])
-    assignments.push({ city: city.name, count: city.count, articles: list, warnings: warnings.filter(w => w.city === city.name) })
+    assignments.push({ city: city.name, count: city.count, articles: list })
   })
-  state.filters[format].preview = { assignments, remaining: availableNames.length - idx }
-  renderFilterPreview(format, assignments); renderFilterStats(format, validCities, assignments); renderWarnings(format, warnings)
-  if (state.filters[format].titleFilterOn) renderKeywordStats(format, allSelectedNames, totalNeeded)
-  else { const ks = document.getElementById('keywordStats-' + format); if (ks) ks.classList.add('hidden') }
-  document.getElementById('btnExport-' + format).disabled = false
-  showToast('预览生成成功 ✅','success')
+  return assignments
 }
-function renderFilterPreview(format, assignments) {
+function collectAllWarnings(typeGroups) {
+  const all = []
+  for (const g of typeGroups) {
+    for (const w of (g.warnings || [])) all.push({ ...w, type: g.type })
+  }
+  return all
+}
+function renderFilterPreview(format, typeGroups) {
   const c = document.getElementById('preview-' + format)
-  if (!assignments.length) { c.innerHTML = '<div class="empty-state"><span class="icon">📭</span><p>无数据</p></div>'; return }
-  let total = 0; assignments.forEach(a => total += a.articles.length)
-  c.innerHTML = '<div class="table-wrap" style="max-height:400px;overflow-y:auto"><table><thead><tr><th style="width:100px">城市</th><th style="width:70px">数量</th><th>分配的文章</th></tr></thead><tbody>' +
-    assignments.map(a => {
-      const isLong = a.articles.length > 5; const display = isLong ? a.articles.slice(0, 5) : a.articles
-      const warn = a.warnings && a.warnings.length ? '<span style="color:var(--warning);font-size:11px;display:block">⚠️ ' + a.warnings[0].message + '</span>' : ''
-      return '<tr><td style="font-weight:600;color:var(--primary)">' + a.city + warn + '</td><td><span class="badge-num">' + a.articles.length + '</span></td><td><div class="article-name" id="articles-' + format + '-' + a.city + '">' + display.join('<br>') +
-        (isLong ? '<div style="margin-top:6px"><button class="btn btn-sm btn-outline" onclick="toggleArticles(\'' + format + '\',\'' + a.city + '\',this)" data-full="' + a.articles.join('&#10;') + '">展开剩余 ' + (a.articles.length - 5) + ' 篇 ▼</button></div>' : '') + '</div></td></tr>'
-    }).join('') + '</tbody></table></div><div style="margin-top:10px;text-align:right;font-size:13px;color:var(--text-muted)">共 <strong>' + total + '</strong> 篇文章</div>'
+  if (!typeGroups || !typeGroups.length) { c.innerHTML = '<div class="empty-state"><span class="icon">📭</span><p>无数据</p></div>'; return }
+  let grandTotal = 0; typeGroups.forEach(g => grandTotal += g.actualCount)
+  const typesSummary = typeGroups.length + ' 个提示词 · ' + typeGroups.map(g => g.type + ' ' + g.actualCount + ' 篇').join(' + ')
+  let html = '<div style="background:var(--primary);color:#fff;padding:12px 16px;border-radius:10px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">' +
+    '<div><strong>' + grandTotal + '</strong> 篇文章，共 ' + typeGroups.length + ' 个提示词类型</div>' +
+    '<div style="font-size:12px;opacity:0.9">' + typesSummary + '</div></div>'
+  html += typeGroups.map((g, ti) => renderTypeGroup(format, g, ti)).join('')
+  c.innerHTML = html
+  // 绑定"加载更多"按钮
+  c.querySelectorAll('[data-loadmore]').forEach(btn => {
+    btn.onclick = () => {
+      const ti = +btn.dataset.typeIdx, fi = +btn.dataset.fromIdx
+      const g = typeGroups[ti]
+      g._expandedFrom = fi
+      const container = btn.closest('.type-group-body')
+      const newHtml = renderCitiesBlock(format, g, ti, fi)
+      btn.closest('.loadmore-wrap').remove()
+      container.insertAdjacentHTML('beforeend', newHtml)
+      bindArticleViewers(container)
+    }
+  })
+  // 绑定文章查看按钮
+  bindArticleViewers(c)
+}
+function renderTypeGroup(format, g, ti) {
+  const noArticlesHtml = g.noArticles
+    ? '<div style="margin-top:8px;padding:10px 14px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;color:var(--danger);font-size:13px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">' +
+        '<span>⚠️ 该提示词下没有可用文章（共需 ' + g.targetCount + ' 篇）</span>' +
+        '<span style="display:flex;gap:6px"><button class="btn btn-sm btn-warning" onclick="openBorrowDialog(\'' + format + '\',' + ti + ')">🔁 借调</button>' +
+        '<button class="btn btn-sm btn-danger" onclick="abandonType(\'' + format + '\',' + ti + ')">放弃此类型</button></span>' +
+      '</div>'
+    : ''
+  const headStyle = g.noArticles ? 'background:#fee2e2;border-color:var(--danger);color:var(--danger)' : 'background:#f1f5f9;border-color:var(--border);color:var(--text)'
+  return '<div class="type-group" data-ti="' + ti + '" style="margin-bottom:12px;border:1px solid;border-radius:10px;overflow:hidden">' +
+    '<div class="type-group-head" onclick="toggleTypeGroup(' + ti + ')" style="padding:12px 16px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;' + headStyle + '">' +
+      '<div><strong>🏷️ ' + g.type + '</strong> <span style="opacity:0.7;font-size:13px">(' + g.actualCount + '/' + g.targetCount + ' 篇)</span></div>' +
+      '<span style="font-size:13px" class="toggle-icon-' + ti + '">▼ 展开</span>' +
+    '</div>' +
+    '<div class="type-group-body hidden" id="tgb-' + format + '-' + ti + '">' +
+      noArticlesHtml +
+      (g.noArticles ? '' : renderCitiesBlock(format, g, ti, 0)) +
+    '</div>' +
+  '</div>'
+}
+function renderCitiesBlock(format, g, ti, fromIdx) {
+  const PAGE = 10
+  const slice = g.assignments.slice(fromIdx, fromIdx + PAGE)
+  let html = ''
+  for (let fi = 0; fi < slice.length; fi++) {
+    const a = slice[fi]
+    const realIdx = fromIdx + fi
+    const isLong = a.articles.length > 5
+    const display = isLong ? a.articles.slice(0, 5) : a.articles
+    const warnHtml = a.warnings && a.warnings.length ? '<span style="color:var(--warning);font-size:11px;display:block">⚠️ ' + a.warnings[0].message + '</span>' : ''
+    const articlesHtml = display.map(n => {
+      const safeName = n.replace(/'/g, '&#39;').replace(/"/g, '&quot;')
+      return '<div data-type="' + g.type + '" data-art="' + safeName + '" class="preview-article-row" style="padding:4px 8px;background:#f8fafc;border-radius:4px;margin-bottom:3px;cursor:pointer;font-size:13px;display:flex;justify-content:space-between;align-items:center">' +
+        '<span>📄 ' + n + '</span>' +
+        '<button class="btn btn-sm btn-outline" style="padding:2px 8px;font-size:11px">查看全文</button>' +
+      '</div>'
+    }).join('')
+    const expandBtn = isLong ? '<div style="margin-top:6px"><button class="btn btn-sm btn-outline" onclick="toggleArticles(\'' + format + '\',\'type' + ti + '-city' + realIdx + '\',this)" data-full="' + a.articles.join('&#10;').replace(/"/g, '&quot;') + '">展开剩余 ' + (a.articles.length - 5) + ' 篇 ▼</button></div>' : ''
+    html += '<div style="margin:10px 16px;padding:10px;background:#fff;border-radius:8px;border:1px solid var(--border)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+        '<strong style="color:var(--primary)">📍 ' + a.city + warnHtml + '</strong>' +
+        '<span class="badge-num">' + a.articles.length + '</span>' +
+      '</div>' +
+      '<div id="articles-' + format + '-type' + ti + '-city' + realIdx + '">' + articlesHtml + expandBtn + '</div>' +
+    '</div>'
+  }
+  if (fromIdx + PAGE < g.assignments.length) {
+    html += '<div class="loadmore-wrap" style="text-align:center;padding:8px"><button class="btn btn-sm btn-outline" data-loadmore data-type-idx="' + ti + '" data-from-idx="' + (fromIdx + PAGE) + '">加载更多城市（剩余 ' + (g.assignments.length - fromIdx - PAGE) + ' 个）▼</button></div>'
+  }
+  return html
+}
+function toggleTypeGroup(ti) {
+  const body = document.querySelector('.type-group[data-ti="' + ti + '"] .type-group-body')
+  if (!body) return
+  body.classList.toggle('hidden')
+  const icon = document.querySelector('.toggle-icon-' + ti)
+  if (icon) icon.textContent = body.classList.contains('hidden') ? '▼ 展开' : '▲ 收起'
+}
+function bindArticleViewers(container) {
+  container.querySelectorAll('.preview-article-row').forEach(row => {
+    row.onclick = async (e) => {
+      e.stopPropagation()
+      const type = row.dataset.type
+      const name = row.dataset.art
+      // 找文件的 storage_path
+      const td = state.typeData[type] || {}
+      const files = (td.folderStructure || {})[getFormatFromContainer(container)] || []
+      // 上面那个 getFormatFromContainer 是 hack，实际用页面的 format
+      const fmt = container.id && container.id.startsWith('preview-') ? container.id.replace('preview-', '') : null
+      const file = files.find(f => f.name === name)
+      if (!file) { showToast('找不到文件 ' + name, 'error'); return }
+      await showArticleContent(row, type, name, file.storage_path, file.original_file || file.fullName || name)
+    }
+  })
+}
+function getFormatFromContainer(container) {
+  // 通过最近的带 data-format 的元素找 format
+  let el = container
+  while (el && !el.dataset && !el.id) el = el.parentElement
+  // 简化：直接在 state.filters 上找激活的；这里用 typeGroups 的方式来推断
+  // 实际上 preview-{format} 是唯一 ID，直接读 container.id
+  if (container.id && container.id.startsWith('preview-')) return container.id.replace('preview-', '')
+  return null
+}
+async function showArticleContent(row, type, name, storagePath, originalName) {
+  // 找/创建内容显示区
+  let area = row.nextElementSibling
+  if (!area || !area.classList || !area.classList.contains('preview-article-content')) {
+    area = document.createElement('div')
+    area.className = 'preview-article-content'
+    area.style.cssText = 'display:none;margin-top:6px;padding:10px;background:#f1f5f9;border-radius:6px;border:1px solid var(--border);max-height:300px;overflow:auto;font-size:12px'
+    row.parentElement.insertBefore(area, row.nextSibling)
+  }
+  const cacheKey = storagePath || ('local::' + type + '::' + name)
+  if (area.dataset.curKey === cacheKey && area.style.display === 'block') {
+    area.style.display = 'none'; area.dataset.curKey = ''; return
+  }
+  area.innerHTML = '<span style="color:var(--text-muted)">加载中...</span>'
+  area.style.display = 'block'
+  area.dataset.curKey = cacheKey
+  try {
+    let text = window.__articleContentCache && window.__articleContentCache[cacheKey]
+    if (!text) {
+      if (!storagePath) { area.innerHTML = '<span style="color:var(--danger)">无 storage_path</span>'; return }
+      const buf = await downloadFromStorage(storagePath)
+      const lowerName = (originalName || name || '').toLowerCase()
+      if (lowerName.endsWith('.docx')) text = await extractDocxText(buf)
+      else if (lowerName.endsWith('.xlsx')) text = await extractXlsxText(buf)
+      else text = new TextDecoder('utf-8', { fatal: false }).decode(buf)
+      if (!window.__articleContentCache) window.__articleContentCache = {}
+      window.__articleContentCache[cacheKey] = text
+    }
+    area.innerHTML = '<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">📄 ' + (originalName || name) + '</div><pre style="margin:0;white-space:pre-wrap;font-size:12px;line-height:1.6">' + text.replace(/</g, '&lt;') + '</pre>'
+  } catch(e) { area.innerHTML = '<span style="color:var(--danger)">加载失败: ' + e.message + '</span>' }
 }
 function toggleArticles(format, city, btn) {
   const container = document.getElementById('articles-' + format + '-' + city)
@@ -1837,10 +1995,16 @@ function toggleArticles(format, city, btn) {
     container.innerHTML = articles.slice(0, 5).join('<br>') + '<div style="margin-top:6px"><button class="btn btn-sm btn-outline" onclick="toggleArticles(\'' + format + '\',\'' + city + '\',this)" data-full="' + full + '">展开剩余 ' + (articles.length - 5) + ' 篇 ▼</button></div>'
   }
 }
-function renderFilterStats(format, cities, assignments) {
+function renderFilterStats(format, typeGroups) {
   const s = document.getElementById('stats-' + format); if (!s) return
-  const totalA = assignments.reduce((s, a) => s + a.articles.length, 0)
-  s.classList.remove('hidden'); s.innerHTML = '<div class="stat-item"><div class="val">' + cities.length + '</div><div class="lbl">城市数</div></div><div class="stat-item"><div class="val">' + totalA + '</div><div class="lbl">文章数</div></div><div class="stat-item"><div class="val">' + totalA + '</div><div class="lbl">导出文件数</div></div>'
+  let totalA = 0, totalCities = 0, totalTypes = 0
+  typeGroups.forEach(g => {
+    if (g.noArticles) return
+    totalA += g.actualCount
+    totalCities += g.assignments.length
+    totalTypes++
+  })
+  s.classList.remove('hidden'); s.innerHTML = '<div class="stat-item"><div class="val">' + totalTypes + '</div><div class="lbl">提示词类型</div></div><div class="stat-item"><div class="val">' + totalCities + '</div><div class="lbl">城市数</div></div><div class="stat-item"><div class="val">' + totalA + '</div><div class="lbl">文章数</div></div><div class="stat-item"><div class="val">' + totalA + '</div><div class="lbl">导出文件数</div></div>'
 }
 function renderWarnings(format, warnings) {
   const old = document.getElementById('warnings-' + format); if (old) old.remove()
@@ -2094,6 +2258,112 @@ function loadStateFromStorage() {}
 
 // ==================== 工具函数 ====================
 function showProgress(format, s) { document.getElementById('pw-' + format).classList.toggle('visible', s) }
+// ==================== 借调对话框 ====================
+// 打开借调对话框：从其他类型借文章来填补当前类型
+async function openBorrowDialog(format, typeIdx) {
+  const pData = state.filters[format].preview
+  if (!pData || !pData.typeGroups[typeIdx]) return
+  const target = pData.typeGroups[typeIdx]
+  // 候选来源：除当前类型外，其他所有有可用文章的类型
+  const sources = []
+  for (const t of state.types) {
+    if (t === target.type) continue
+    const usedSet = state.usedArticlesByType[t] || new Set()
+    const files = ((state.typeData[t] || {}).folderStructure || {})[format] || []
+    const avail = files.filter(f => !usedSet.has(f.name))
+    if (avail.length > 0) sources.push({ name: t, available: avail.length })
+  }
+  const dialog = document.createElement('div'); dialog.className = 'modal show'
+  dialog.innerHTML = '<div class="modal-content" onclick="event.stopPropagation()" style="max-width:520px">' +
+    '<div class="modal-title">🔁 借调文章 - ' + target.type + '</div>' +
+    '<p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">该类型当前可用 <strong>' + target.actualCount + '</strong> 篇，目标 <strong>' + target.targetCount + '</strong> 篇，还差 <strong style="color:var(--danger)">' + (target.targetCount - target.actualCount) + '</strong> 篇。可从以下类型借调：</p>' +
+    (sources.length === 0 ? '<div style="padding:12px;background:#fef3c7;border-radius:8px;color:#92400e">⚠️ 没有其他可用类型可借调</div>' :
+      '<div id="borrowList">' + sources.map((s, i) => '<label style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#f8fafc;border-radius:8px;margin-bottom:6px;cursor:pointer">' +
+        '<span><input type="checkbox" data-borrow-type="' + s.name + '" onchange="updateBorrowNeed(\'' + format + '\',' + typeIdx + ')" checked> <strong>' + s.name + '</strong></span>' +
+        '<span style="color:var(--text-muted);font-size:13px">' + s.available + ' 篇可用</span>' +
+      '</label>').join('') + '</div>' +
+      '<div style="margin-top:10px;padding:10px;background:#f1f5f9;border-radius:8px;font-size:13px">可借调总数：<strong id="borrowAvail">0</strong> · 还差：<strong id="borrowNeed" style="color:var(--danger)">0</strong></div>'
+    ) +
+    '<div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">' +
+      '<button class="btn btn-outline" onclick="this.closest(\'.modal\').remove()">取消</button>' +
+      '<button class="btn btn-danger" onclick="abandonType(\'' + format + '\',' + typeIdx + '); this.closest(\'.modal\').remove()">放弃此类型</button>' +
+      '<button class="btn btn-primary" onclick="confirmBorrow(\'' + format + '\',' + typeIdx + '); this.closest(\'.modal\').remove()">确认借调</button>' +
+    '</div>' +
+  '</div>'
+  document.body.appendChild(dialog)
+  dialog.onclick = (e) => { if (e.target === dialog) dialog.remove() }
+  // 初始化可用数
+  updateBorrowNeed(format, typeIdx)
+}
+function updateBorrowNeed(format, typeIdx) {
+  const pData = state.filters[format].preview
+  const target = pData.typeGroups[typeIdx]
+  const checked = Array.from(document.querySelectorAll('[data-borrow-type]:checked')).map(el => el.dataset.borrowType)
+  let totalAvail = 0
+  for (const t of checked) {
+    const usedSet = state.usedArticlesByType[t] || new Set()
+    const files = ((state.typeData[t] || {}).folderStructure || {})[format] || []
+    totalAvail += files.filter(f => !usedSet.has(f.name)).length
+  }
+  const need = target.targetCount - target.actualCount
+  const a = document.getElementById('borrowAvail'); if (a) a.textContent = totalAvail
+  const n = document.getElementById('borrowNeed'); if (n) { n.textContent = Math.max(0, need - totalAvail); n.style.color = need > totalAvail ? 'var(--danger)' : 'var(--success)' }
+}
+async function confirmBorrow(format, typeIdx) {
+  const pData = state.filters[format].preview
+  const target = pData.typeGroups[typeIdx]
+  const checked = Array.from(document.querySelectorAll('[data-borrow-type]:checked')).map(el => el.dataset.borrowType)
+  const need = target.targetCount - target.actualCount
+  if (need <= 0) return
+  if (!checked.length) { showToast('请至少选择一个借调来源', 'error'); return }
+  // 从每个来源按可用文章顺序拿文章，凑够 need
+  const borrowedArticles = []  // [{name, fromType}]
+  for (const fromType of checked) {
+    if (borrowedArticles.length >= need) break
+    const usedSet = state.usedArticlesByType[fromType] || new Set()
+    const files = ((state.typeData[fromType] || {}).folderStructure || {})[format] || []
+    const pool = files.filter(f => !usedSet.has(f.name))
+    shuffleArray(pool)
+    for (const f of pool) {
+      if (borrowedArticles.length >= need) break
+      borrowedArticles.push({ name: f.name, fromType })
+    }
+  }
+  if (!borrowedArticles.length) { showToast('无可借调文章', 'error'); return }
+  // 把借调的文章加到目标类型的 assignments（标记 borrowed from）
+  const newCityAssignment = { city: '🔁 借调', count: borrowedArticles.length, articles: borrowedArticles.map(b => b.name), borrowedFrom: borrowedArticles.map(b => b.fromType) }
+  // 找到合适的位置插入
+  if (!target.assignments.find(a => a.city === '🔁 借调')) {
+    target.assignments.push(newCityAssignment)
+  } else {
+    const existing = target.assignments.find(a => a.city === '🔁 借调')
+    existing.articles.push(...borrowedArticles.map(b => b.name))
+    existing.count = existing.articles.length
+  }
+  target.actualCount = target.actualCount + borrowedArticles.length
+  // 重新渲染预览
+  renderFilterPreview(format, pData.typeGroups)
+  renderFilterStats(format, pData.typeGroups)
+  showToast('已借调 ' + borrowedArticles.length + ' 篇（来自 ' + [...new Set(borrowedArticles.map(b => b.fromType))].join('、') + '）', 'success')
+}
+function abandonType(format, typeIdx) {
+  const types = getActiveTypes(format)
+  // 从 types 数组里删掉这个（如果只剩一个会保留为 100%）
+  const t = types[typeIdx]
+  if (!t) return
+  if (!confirm('确定放弃「' + t.name + '」吗？该类型不会参与本次导出。')) return
+  types.splice(typeIdx, 1)
+  if (!types.length) types.push({ name: t.name, pct: 100 })
+  setActiveTypes(format, types)
+  // 清掉预览（因为类型变了）
+  state.filters[format].preview = null
+  document.getElementById('btnExport-' + format).disabled = true
+  document.getElementById('btnExport-' + format).dataset.pctValidated = ''
+  renderTypeMixEditor(format)
+  saveFiltersToCloud()
+  document.getElementById('preview-' + format).innerHTML = '<div class="empty-state"><span class="icon">📭</span><p>已放弃该类型，请重新生成预览</p></div>'
+  showToast('已放弃类型「' + t.name + '」', 'info')
+}
 function updateProgress(format, cur, total, text) { const p = Math.round((cur / Math.max(total, 1)) * 100); document.getElementById('pf-' + format).style.width = p + '%'; document.getElementById('pp-' + format).textContent = p + '%'; document.getElementById('pt-' + format).textContent = text || cur + '/' + total }
 function completeProgress(format) { document.getElementById('pf-' + format).classList.add('complete'); document.getElementById('pt-' + format).textContent = '完成!'; document.getElementById('pp-' + format).textContent = '100%' }
 function log(format, msg, lvl) {
