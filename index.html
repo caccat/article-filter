@@ -2038,37 +2038,64 @@ function shuffleArray(a) { for (let i = a.length - 1; i > 0; i--) { const j = Ma
 async function exportFormat(format) {
   const pData = state.filters[format].preview
   if (!pData) { showToast('请先生成预览','error'); return }
-  const cfg = PLATFORM_CONFIG[format]
-  const type = state.filters[format].activeType || state.activeType
-  const usedSet = state.usedArticlesByType[type] || new Set()
-  const assignedNames = new Set()
-  pData.assignments.forEach(a => a.articles.forEach(n => assignedNames.add(n)))
-  const td = state.typeData[type] || {}
-  const sourceFiles = (td.folderStructure || {})[format] || []
-  const toExport = sourceFiles.filter(f => assignedNames.has(f.name) && !usedSet.has(f.name))
-  if (!toExport.length) { showToast('没有需要导出的文件','error'); return }
-  showProgress(format, true)
-  log(format, '开始导出「' + cfg.label + '」(' + cfg.ext.toUpperCase() + ')...\n','info')
-  const zip = new JSZip(); let processed = 0
-  log(format, '共 ' + toExport.length + ' 个文件，并发下载中（8 路）...\n','info')
-
-  // 先按城市打印分组（与原日志风格一致）
-  for (const a of pData.assignments) {
-    log(format, '\n━━━ ' + a.city + ' (' + a.articles.length + '篇) ━━━\n','info')
+  // 兼容旧版预览结构（{assignments}）→ 包装成新的 {typeGroups}
+  let typeGroups = pData.typeGroups
+  if (!typeGroups && pData.assignments) {
+    const firstType = state.filters[format].activeType || state.activeType
+    typeGroups = [{ type: firstType, targetCount: pData.assignments.reduce((s,a)=>s+a.count,0), actualCount: pData.assignments.reduce((s,a)=>s+a.articles.length,0), noArticles: false, assignments: pData.assignments }]
   }
+  if (!typeGroups || !typeGroups.length) { showToast('没有可导出的内容','error'); return }
+  const cfg = PLATFORM_CONFIG[format]
+  // 校验比例必须 = 100%
+  const pctErr = validateActiveTypePct(format)
+  if (pctErr) { showToast(pctErr, 'error'); return }
 
-  // 收集所有下载任务（按文章名去重）
-  const addedToZip = new Set()
+  // 收集所有下载任务：每个任务包含 (zipPath, sourceFile, sourceType, targetType, city)
   const tasks = []
-  for (const a of pData.assignments) {
-    for (const art of a.articles) {
-      for (const m of sourceFiles.filter(f => f.name === art && !usedSet.has(f.name))) {
-        const zipName = m.original_file || m.fullName
-        if (addedToZip.has(zipName)) continue
-        addedToZip.add(zipName)
-        tasks.push({ m, zipName, city: a.city })
+  const added = new Set() // (sourceType + file.name) 防止同一源类型内重复
+  for (const g of typeGroups) {
+    if (g.noArticles) continue
+    for (const a of g.assignments) {
+      for (const artName of a.articles) {
+        // 优先从目标类型找文件，否则从可能的借调源类型找
+        let sourceType = g.type
+        let sourceFiles = ((state.typeData[sourceType] || {}).folderStructure || {})[format] || []
+        let m = sourceFiles.find(f => f.name === artName)
+        // 如果不在目标类型里（可能是借调），按 preview 中标记的 borrowedFrom 找
+        if (!m && a.borrowedFrom) {
+          for (const fromType of a.borrowedFrom) {
+            const fs = ((state.typeData[fromType] || {}).folderStructure || {})[format] || []
+            const fm = fs.find(f => f.name === artName)
+            if (fm) { sourceType = fromType; m = fm; break }
+          }
+        }
+        if (!m) continue
+        const key = sourceType + '::' + m.name
+        if (added.has(key)) continue
+        added.add(key)
+        const zipPath = g.type + '/' + (m.original_file || m.fullName)
+        tasks.push({ m, zipPath, sourceType, targetType: g.type, city: a.city })
       }
     }
+  }
+  if (!tasks.length) { showToast('没有需要导出的文件','error'); return }
+
+  showProgress(format, true)
+  const d = new Date()
+  const ts = d.getFullYear() +
+    String(d.getMonth()+1).padStart(2,'0') +
+    String(d.getDate()).padStart(2,'0') + '_' +
+    String(d.getHours()).padStart(2,'0') +
+    String(d.getMinutes()).padStart(2,'0') +
+    String(d.getSeconds()).padStart(2,'0')
+  const nTypes = typeGroups.filter(g => !g.noArticles).length
+  log(format, '开始导出「' + cfg.label + '」(' + cfg.ext.toUpperCase() + ')...\n','info')
+  log(format, '  📦 ' + nTypes + ' 个提示词类型 · ' + tasks.length + ' 个文件\n','info')
+  const zip = new JSZip(); let processed = 0
+  log(format, '共 ' + tasks.length + ' 个文件，并发下载中（8 路）...\n','info')
+  for (const g of typeGroups) {
+    if (g.noArticles) continue
+    log(format, '\n━━━ ' + g.type + ' (' + g.actualCount + '篇) ━━━\n','info')
   }
 
   // 8 路并发下载池
@@ -2086,8 +2113,8 @@ async function exportFormat(format) {
         } else {
           log(format, '  ⚠ ' + t.m.fullName + ': 文件不可用（请重新上传）\n','warn'); continue
         }
-        zip.file(t.zipName, fileContent)
-        log(format, '  ✓ [' + t.city + '] ' + t.zipName + '\n','success')
+        zip.file(t.zipPath, fileContent)
+        log(format, '  ✓ [' + t.targetType + '/' + t.city + '] ' + t.zipPath.split('/').pop() + '\n','success')
         processed++
         updateProgress(format, processed, tasks.length, t.m.fullName)
         if (processed % 8 === 0) await sleep(0)
@@ -2098,41 +2125,52 @@ async function exportFormat(format) {
   log(format, '\n正在打包...\n','info')
   try {
     const blob = await zip.generateAsync({ type:'blob', compression:'DEFLATE', compressionOptions:{ level:6 } },
-      meta => updateProgress(format, processed, toExport.length, '打包 ' + Math.round(meta.percent) + '%'))
-    downloadBlob(blob, cfg.label + '_' + cfg.ext + '_' + new Date().toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).replace(/[/:]/g,'-') + '.zip')
+      meta => updateProgress(format, processed, tasks.length, '打包 ' + Math.round(meta.percent) + '%'))
+    const zipName = ts + '_' + cfg.label + '_' + cfg.ext.toUpperCase() + '_' + nTypes + '种类型.zip'
+    downloadBlob(blob, zipName)
     completeProgress(format)
     log(format, '\n✅ 导出成功！' + processed + ' 个文件\n','success')
-    showToast('「' + cfg.label + '」导出成功!','success')
-    // 导出后删除已导出文章的数据（typeData + Supabase articles），避免后续重新上传被去重拒绝
-    const exportedTitles = [...assignedNames]
-    if (exportedTitles.length > 0) {
-      // 从 usedSet 中移除已导出文章（数据已删除，不应再阻止重新上传后的导出）
-      exportedTitles.forEach(n => usedSet.delete(n))
-      // 从 typeData 中移除已导出的文件
-      const fmtFiles = td.folderStructure[format] || []
-      const remaining = fmtFiles.filter(f => !exportedTitles.includes(f.name))
-      td.folderStructure[format] = remaining
-      // 更新 allArticleNames（基于剩余 folderStructure 重新计算，区分格式）
-      const remainingNames = new Set()
-      for (const fmt of FORMAT_KEYS) {
-        (td.folderStructure[fmt] || []).forEach(f => remainingNames.add(f.name))
-      }
-      td.allArticleNames = Array.from(remainingNames)
-      // 更新 formatFileCounts
-      td.formatFileCounts[format] = remaining.length
-      // 更新 uploaded 状态
-      state.uploaded = Object.keys(state.typeData).some(t =>
-        Object.keys(state.typeData[t].folderStructure || {}).some(f => (state.typeData[t].folderStructure[f] || []).length > 0))
-      // 同步删除 Supabase articles 表
-      console.log('[exportFormat] 开始删除 Supabase articles: type=' + type + ' format=' + format + ' count=' + exportedTitles.length)
-      let deletedCount = 0
-      for (const title of exportedTitles) {
-        const { error } = await supabaseClient.from('articles').delete().eq('type', type).eq('format', format).eq('title', title)
-        if (!error) deletedCount++
-        else console.error('[exportFormat] 删除失败:', title, error)
-      }
-      console.log('[exportFormat] Supabase 删除完成: ' + deletedCount + '/' + exportedTitles.length)
+    showToast('「' + cfg.label + '」导出成功!', 'success')
+
+    // === 导出后清理（多类型感知）===
+    // 1) 按 (sourceType, format) 收集所有需要清理的文章名
+    // 2) 删除每对的 folderStructure[format] + Supabase articles
+    // 3) usedArticlesByType: 借调源 + 借调目标 都要标记
+    const toCleanByType = {}  // {sourceType: Set(name)}
+    for (const t of tasks) {
+      if (!toCleanByType[t.sourceType]) toCleanByType[t.sourceType] = new Set()
+      toCleanByType[t.sourceType].add(t.m.name)
     }
+    for (const [sourceType, names] of Object.entries(toCleanByType)) {
+      const usedSet = state.usedArticlesByType[sourceType] || new Set()
+      names.forEach(n => usedSet.add(n))  // 标记源类型已用
+      // 删除 typeData 文件
+      const ttd = state.typeData[sourceType]
+      if (ttd && ttd.folderStructure && ttd.folderStructure[format]) {
+        const remaining = ttd.folderStructure[format].filter(f => !names.has(f.name))
+        ttd.folderStructure[format] = remaining
+        // 更新 allArticleNames
+        const remainingNames = new Set()
+        for (const fmt of FORMAT_KEYS) (ttd.folderStructure[fmt] || []).forEach(f => remainingNames.add(f.name))
+        ttd.allArticleNames = Array.from(remainingNames)
+        ttd.formatFileCounts[format] = remaining.length
+      }
+      // 同步删除 Supabase articles
+      for (const title of names) {
+        const { error } = await supabaseClient.from('articles').delete().eq('type', sourceType).eq('format', format).eq('title', title)
+        if (error) console.error('[exportFormat] 删除失败:', sourceType, title, error)
+      }
+    }
+    // 借调场景：目标类型的 usedSet 也要标记
+    for (const t of tasks) {
+      if (t.sourceType !== t.targetType) {
+        const targetUsed = state.usedArticlesByType[t.targetType] || new Set()
+        targetUsed.add(t.m.name)
+        state.usedArticlesByType[t.targetType] = targetUsed
+      }
+    }
+    state.uploaded = Object.keys(state.typeData).some(t =>
+      Object.keys(state.typeData[t].folderStructure || {}).some(f => (state.typeData[t].folderStructure[f] || []).length > 0))
     await saveUsedToCloud()
     saveStateToStorage(); updateFilterPage(format); updateNavBadges(); renderOverview()
     buildTagMatrix(); renderHeatmap()
