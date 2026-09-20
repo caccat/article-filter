@@ -421,11 +421,19 @@ async function saveFiltersToCloud() {
         active_types: activeTypes,
         folder_mode: f.folderMode || getDefaultFolderMode(fmt)
       }
-      const { error } = await supabaseClient.from('filter_configs').upsert(row)
-      // 兼容旧表结构（无 active_types 列）：重试只写旧字段
-      if (error && /active_types/i.test(error.message || '')) {
-        delete row.active_types
-        await supabaseClient.from('filter_configs').upsert(row)
+      // 通用降级：库里缺哪列（PGRST204）就自动剔除哪列重试，最多 5 次
+      let tries = 0
+      while (true) {
+        const { error } = await supabaseClient.from('filter_configs').upsert(row)
+        if (!error) break
+        const m = /Could not find the '([^']+)'/i.exec(error.message || '')
+        if (m && row[m[1]] !== undefined && tries < 5) {
+          console.warn('[saveFilters] filter_configs 缺少列「' + m[1] + '」，降级保存。建议执行：alter table filter_configs add column if not exists ' + m[1] + ' ...')
+          delete row[m[1]]; tries++
+        } else {
+          console.error('[saveFilters] upsert 失败:', error)
+          break
+        }
       }
     }
   } catch(e) { console.error('[saveFiltersToCloud]', e) }
