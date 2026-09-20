@@ -1348,7 +1348,34 @@ function calcCityPctSum(format) {
     : state.filters[format].cities.filter(c => c.name.trim() && c.pct > 0).map(c => c.pct)
   return pcts.reduce((s, v) => s + v, 0)
 }
-function getCityAllocations(format) {
+// ==================== 多类型（提示词）数据模型 ====================
+// 兼容旧格式：state.filters[fmt].activeType（字符串） → 新格式：state.filters[fmt].activeTypes（数组）
+// 旧数据只读不写：读取时若 activeTypes 不存在但 activeType 存在，自动包成 [{name: activeType, pct: 100}]
+function getActiveTypes(format) {
+  const f = state.filters[format]
+  if (!f) return []
+  if (Array.isArray(f.activeTypes) && f.activeTypes.length > 0) {
+    return f.activeTypes
+  }
+  // 迁移：旧格式 → 新格式
+  const oldName = f.activeType || state.activeType || (state.types[0] || '提示词一')
+  return [{ name: oldName, pct: 100 }]
+}
+function setActiveTypes(format, arr) {
+  state.filters[format].activeTypes = arr.map(t => ({ name: t.name, pct: Math.max(0, Math.min(100, parseFloat(t.pct) || 0)) }))
+}
+function getActiveTypeSum(format) {
+  return getActiveTypes(format).reduce((s, t) => s + t.pct, 0)
+}
+// 校验：必须=100，否则返回错误信息；通过则返回 null
+function validateActiveTypePct(format) {
+  const types = getActiveTypes(format).filter(t => t.pct > 0)
+  if (!types.length) return '至少需要 1 个比例 > 0 的提示词'
+  const sum = types.reduce((s, t) => s + t.pct, 0)
+  if (Math.abs(sum - 100) > 0.001) return '比例总和必须 = 100%，当前 = ' + sum + '%'
+  return null
+}
+function getCityAllocations(format, typeOverride) {
   const totalCount = state.filters[format].totalCount || 100
   if (state.filters[format].filterMode === 'template') {
     const pctSum = calcCityPctSum(format)
@@ -1359,7 +1386,8 @@ function getCityAllocations(format) {
     }))
   }
   // 自由筛选：按各城市可用文章数比例自动分配
-  const type = state.filters[format].activeType || state.activeType
+  // typeOverride 用于多类型导出场景：每个类型独立调用一次，传不同 type
+  const type = typeOverride || state.filters[format].activeType || state.activeType
   const usedSet = state.usedArticlesByType[type] || new Set()
   const td = state.typeData[type] || {}
   const files = ((td.folderStructure || {})[format] || []).filter(f => !usedSet.has(f.name))
@@ -1389,6 +1417,26 @@ function getCityAllocations(format) {
     for (let i = 0; i < remaining && i < allocations.length; i++) allocations[i].count++
   }
   return allocations.filter(a => a.count > 0)
+}
+// 多类型导出：把总篇数按比例切到各类型，每个类型走 getCityAllocations
+function getTypeAllocations(format) {
+  const err = validateActiveTypePct(format)
+  if (err) return { error: err, allocations: [] }
+  const types = getActiveTypes(format).filter(t => t.pct > 0)
+  const totalCount = state.filters[format].totalCount || 100
+  const sumPct = types.reduce((s, t) => s + t.pct, 0)
+  // 按比例分配（最大余数法）
+  const allocations = types.map(t => {
+    const raw = totalCount * t.pct / sumPct
+    return { name: t.name, pct: t.pct, raw, count: Math.floor(raw) }
+  })
+  let allocated = allocations.reduce((s, a) => s + a.count, 0)
+  let remaining = totalCount - allocated
+  if (remaining > 0) {
+    allocations.sort((a, b) => (b.raw - b.count) - (a.raw - a.count))
+    for (let i = 0; i < remaining && i < allocations.length; i++) allocations[i].count++
+  }
+  return { error: null, allocations: allocations.filter(a => a.count > 0) }
 }
 function renderCityList(format) {
   const list = document.getElementById('cityList-' + format); if (!list) return
