@@ -1854,6 +1854,7 @@ function renderFilterPreview(format, typeGroups) {
     '<div style="font-size:12px;opacity:0.9">' + typesSummary + '</div></div>'
   html += typeGroups.map((g, ti) => renderTypeGroup(format, g, ti)).join('')
   c.innerHTML = html
+  c.dataset.format = format  // 标记 format 供后续使用
   // 绑定"加载更多"按钮
   c.querySelectorAll('[data-loadmore]').forEach(btn => {
     btn.onclick = () => {
@@ -1864,11 +1865,11 @@ function renderFilterPreview(format, typeGroups) {
       const newHtml = renderCitiesBlock(format, g, ti, fi)
       btn.closest('.loadmore-wrap').remove()
       container.insertAdjacentHTML('beforeend', newHtml)
-      bindArticleViewers(container)
+      bindArticleViewers(container, format)
     }
   })
   // 绑定文章查看按钮
-  bindArticleViewers(c)
+  bindArticleViewers(c, format)
 }
 function renderTypeGroup(format, g, ti) {
   const noArticlesHtml = g.noArticles
@@ -1928,31 +1929,20 @@ function toggleTypeGroup(ti) {
   const icon = document.querySelector('.toggle-icon-' + ti)
   if (icon) icon.textContent = body.classList.contains('hidden') ? '▼ 展开' : '▲ 收起'
 }
-function bindArticleViewers(container) {
+function bindArticleViewers(container, format) {
+  const fmt = format || container.dataset.format
   container.querySelectorAll('.preview-article-row').forEach(row => {
     row.onclick = async (e) => {
       e.stopPropagation()
       const type = row.dataset.type
       const name = row.dataset.art
-      // 找文件的 storage_path
       const td = state.typeData[type] || {}
-      const files = (td.folderStructure || {})[getFormatFromContainer(container)] || []
-      // 上面那个 getFormatFromContainer 是 hack，实际用页面的 format
-      const fmt = container.id && container.id.startsWith('preview-') ? container.id.replace('preview-', '') : null
+      const files = (td.folderStructure || {})[fmt] || []
       const file = files.find(f => f.name === name)
       if (!file) { showToast('找不到文件 ' + name, 'error'); return }
       await showArticleContent(row, type, name, file.storage_path, file.original_file || file.fullName || name)
     }
   })
-}
-function getFormatFromContainer(container) {
-  // 通过最近的带 data-format 的元素找 format
-  let el = container
-  while (el && !el.dataset && !el.id) el = el.parentElement
-  // 简化：直接在 state.filters 上找激活的；这里用 typeGroups 的方式来推断
-  // 实际上 preview-{format} 是唯一 ID，直接读 container.id
-  if (container.id && container.id.startsWith('preview-')) return container.id.replace('preview-', '')
-  return null
 }
 async function showArticleContent(row, type, name, storagePath, originalName) {
   // 找/创建内容显示区
@@ -2045,6 +2035,9 @@ async function exportFormat(format) {
     typeGroups = [{ type: firstType, targetCount: pData.assignments.reduce((s,a)=>s+a.count,0), actualCount: pData.assignments.reduce((s,a)=>s+a.articles.length,0), noArticles: false, assignments: pData.assignments }]
   }
   if (!typeGroups || !typeGroups.length) { showToast('没有可导出的内容','error'); return }
+  // 拦截：有无文章且未借调完成的类型
+  const noArtTypes = typeGroups.filter(g => g.noArticles && g.actualCount < g.targetCount)
+  if (noArtTypes.length > 0) { showToast('以下类型没有可用文章且未完成借调：' + noArtTypes.map(g => g.type).join('、'), 'error'); return }
   const cfg = PLATFORM_CONFIG[format]
   // 校验比例必须 = 100%
   const pctErr = validateActiveTypePct(format)
