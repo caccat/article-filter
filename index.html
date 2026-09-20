@@ -650,6 +650,7 @@ const state = {
   tagMatrixByType: {}, cityArticleCountByType: {},
   keywordTemplates: [], // 标题关键词模板
   typeMixTemplates: {}, // 按平台（FORMAT_KEYS）分桶的多类型比例模板
+  _editMixTpl: null, // 管理页正在编辑的比例模板 {format, idx}
   _heatmapFormat: 'docx', _heatmapType: '全部', _manageTab: 'types'
 }
 FORMAT_KEYS.forEach(f => {
@@ -1411,9 +1412,56 @@ function renderTypeMixTemplateManager(format) {
 function deleteTypeMixTemplate(format, idx) {
   if (!confirm('确定删除这个模板吗？')) return
   state.typeMixTemplates[format].splice(idx, 1)
+  if (state._editMixTpl) state._editMixTpl = null
   renderTypeMixTemplateSelect(format)
-  const mgr = document.getElementById('typeMixManager-' + format); if (mgr) mgr.remove()
   saveTypeMixTemplatesToCloud()
+  // 管理页可见时刷新列表
+  if (document.getElementById('manageContent')) renderManage()
+  showToast('模板已删除', 'info')
+}
+// ==================== 管理页：比例模板编辑 ====================
+function renderMixTplRow(fmt, t, i) {
+  const editing = state._editMixTpl && state._editMixTpl.format === fmt && state._editMixTpl.idx === i
+  if (editing) {
+    return '<div style="padding:10px;background:#eff6ff;border-radius:6px;border:1px solid var(--primary);margin-bottom:4px">' +
+      '<div style="display:flex;gap:8px;margin-bottom:8px;align-items:center"><span style="font-size:12px;color:var(--text-muted);white-space:nowrap">模板名：</span>' +
+      '<input id="mixEditName-' + fmt + '-' + i + '" value="' + String(t.name).replace(/"/g, '&quot;') + '" style="flex:1;padding:6px 10px;border:2px solid var(--border);border-radius:6px;font-size:13px;outline:none"></div>' +
+      t.mix.map((m, j) => '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">' +
+        '<span style="flex:1;font-size:13px">' + m.name + '</span>' +
+        '<input type="number" min="0" max="100" id="mixEditPct-' + fmt + '-' + i + '-' + j + '" value="' + m.pct + '" style="width:70px;padding:6px 10px;border:2px solid var(--border);border-radius:6px;font-size:13px;outline:none">' +
+        '<span style="font-size:12px;color:var(--text-muted)">%</span></div>').join('') +
+      '<div style="display:flex;gap:8px;margin-top:6px"><button class="btn btn-sm btn-primary" onclick="saveMixTplEdit(\'' + fmt + '\',' + i + ')">保存</button>' +
+      '<button class="btn btn-sm btn-outline" onclick="cancelMixTplEdit()">取消</button></div></div>'
+  }
+  return '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:#fff;border-radius:6px;border:1px solid var(--border);margin-bottom:4px">' +
+    '<span style="flex:1;font-size:13px">⚖️ ' + t.name + ' <span style="color:var(--text-muted);font-size:12px">' + (t.mix || []).map(x => x.name + ' ' + x.pct + '%').join(' + ') + '</span></span>' +
+    '<button class="btn btn-sm btn-outline" onclick="editMixTpl(\'' + fmt + '\',' + i + ')">编辑</button>' +
+    '<button class="btn btn-sm btn-danger" onclick="if(confirm(\'确认删除？\'))deleteTypeMixTemplate(\'' + fmt + '\',' + i + ')">删除</button></div>'
+}
+function editMixTpl(format, idx) { state._editMixTpl = { format, idx }; renderManage() }
+function cancelMixTplEdit() { state._editMixTpl = null; renderManage() }
+function saveMixTplEdit(format, idx) {
+  const t = (state.typeMixTemplates[format] || [])[idx]
+  if (!t) return
+  const nameEl = document.getElementById('mixEditName-' + format + '-' + idx)
+  const newName = ((nameEl && nameEl.value) || '').trim()
+  if (!newName) { showToast('模板名不能为空', 'error'); return }
+  // 重名检查（排除自己）
+  if ((state.typeMixTemplates[format] || []).some((x, i) => i !== idx && x.name === newName)) { showToast('已存在同名模板', 'error'); return }
+  if ((state.templates[format] || []).some(x => x.name === newName)) { showToast('城市模板里已有同名模板，请换一个名字', 'error'); return }
+  t.name = newName
+  let sum = 0
+  t.mix.forEach((m, j) => {
+    const el = document.getElementById('mixEditPct-' + format + '-' + idx + '-' + j)
+    if (el) m.pct = Math.max(0, Math.min(100, parseFloat(el.value) || 0))
+    sum += m.pct
+  })
+  if (Math.abs(sum - 100) > 0.001) { showToast('比例总和 = ' + sum + '%，需 = 100%', 'error'); return }
+  state._editMixTpl = null
+  saveTypeMixTemplatesToCloud()
+  renderManage()
+  renderTypeMixTemplateSelect(format)
+  showToast('模板已更新 ✅', 'success')
 }
 function generateFilterPages() {
   FORMAT_KEYS.forEach(fmt => {
@@ -2266,10 +2314,17 @@ function renderManageTab(tab) {
     let h = '<div class="card"><div class="card-title">📋 模板管理</div>'
     FORMAT_KEYS.forEach(fmt => {
       h += '<div style="margin-bottom:12px"><div style="font-weight:600;font-size:14px;margin-bottom:6px">' + PLATFORM_CONFIG[fmt].icon + ' ' + PLATFORM_CONFIG[fmt].label + '</div>'
+      // 城市模板
+      h += '<div style="font-size:12px;color:var(--text-muted);margin:4px 0">城市模板</div>'
       const list = state.templates[fmt]
       if (!list.length) h += '<div style="font-size:13px;color:var(--text-muted)">暂无模板</div>'
       else h += list.map(t => '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:#fff;border-radius:6px;border:1px solid var(--border);margin-bottom:4px">' +
         '<span style="flex:1;font-size:13px">📋 ' + t.name + '</span><button class="btn btn-sm btn-outline" onclick="if(confirm(\'确认删除？\'))deleteTemplate(\'' + fmt + '\',\'' + t.name + '\')">删除</button></div>').join('')
+      // 提示词比例模板
+      const mixList = state.typeMixTemplates[fmt] || []
+      h += '<div style="font-size:12px;color:var(--text-muted);margin:10px 0 4px">提示词比例模板</div>'
+      if (!mixList.length) h += '<div style="font-size:13px;color:var(--text-muted)">暂无</div>'
+      else mixList.forEach((t, i) => { h += renderMixTplRow(fmt, t, i) })
       h += '</div>'
     }); h += '</div>'; el.innerHTML = h
   } else if (tab === 'used') {
