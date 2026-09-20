@@ -278,11 +278,12 @@ async function loadAllFromCloud() {
     }
     const articlesRes = { data: allArticles }
 
-    const [typesRes, templatesRes, usedRes, filtersRes] = await Promise.all([
+    const [typesRes, templatesRes, usedRes, filtersRes, mixTplsRes] = await Promise.all([
       supabaseClient.from('types').select('name'),
       supabaseClient.from('templates').select('*'),
       supabaseClient.from('used_articles').select('type, title'),
-      supabaseClient.from('filter_configs').select('*')
+      supabaseClient.from('filter_configs').select('*'),
+      supabaseClient.from('type_mix_templates').select('*')
     ])
     await loadKeywordTemplatesFromCloud()
     // 加载类型（优先用 types 表，同时从 articles 补全，避免 articles 里有但 types 表缺失导致统计遗漏）
@@ -310,12 +311,23 @@ async function loadAllFromCloud() {
       filtersRes.data.forEach(f => {
         if (state.filters[f.format]) {
           if (f.type) state.filters[f.format].activeType = f.type
+          // 新格式：有 active_types 字段则使用；否则由 getActiveTypes 在读取时迁移
+          if (Array.isArray(f.active_types) && f.active_types.length > 0) {
+            state.filters[f.format].activeTypes = f.active_types.map(t => ({ name: t.name, pct: t.pct }))
+          }
           state.filters[f.format].filterMode = f.filter_mode || 'free'
           state.filters[f.format].cities = f.cities || []
           state.filters[f.format].templateCounts = f.template_counts || {}
           state.filters[f.format].titleFilterOn = f.title_filter_on || false
           state.filters[f.format].keywordTemplateId = f.keyword_template_id || null
         }
+      })
+    }
+    // 加载类型比例模板（按平台分桶）
+    if (mixTplsRes && mixTplsRes.data) {
+      mixTplsRes.data.forEach(t => {
+        if (!state.typeMixTemplates[t.format]) state.typeMixTemplates[t.format] = []
+        state.typeMixTemplates[t.format].push({ name: t.name, mix: t.mix || [] })
       })
     }
     // 重建文章内存数据
@@ -390,14 +402,35 @@ async function saveFiltersToCloud() {
     await supabaseClient.from('filter_configs').delete().neq('format', '_')
     for (const fmt of FORMAT_KEYS) {
       const f = state.filters[fmt]
-      await supabaseClient.from('filter_configs').upsert({
-        format: fmt, type: f.activeType || state.activeType,
+      const activeTypes = getActiveTypes(fmt)
+      const firstType = (activeTypes.find(t => t.pct > 0) || activeTypes[0] || { name: state.types[0] }).name
+      const row = {
+        format: fmt, type: firstType,
         filter_mode: f.filterMode, cities: f.cities, template_counts: f.templateCounts || {},
         title_filter_on: f.titleFilterOn || false,
-        keyword_template_id: f.keywordTemplateId || null
-      })
+        keyword_template_id: f.keywordTemplateId || null,
+        active_types: activeTypes
+      }
+      const { error } = await supabaseClient.from('filter_configs').upsert(row)
+      // 兼容旧表结构（无 active_types 列）：重试只写旧字段
+      if (error && /active_types/i.test(error.message || '')) {
+        delete row.active_types
+        await supabaseClient.from('filter_configs').upsert(row)
+      }
     }
-  } catch(e) {}
+  } catch(e) { console.error('[saveFiltersToCloud]', e) }
+}
+async function saveTypeMixTemplatesToCloud() {
+  try {
+    await supabaseClient.from('type_mix_templates').delete().neq('format', '_')
+    const rows = []
+    for (const fmt of FORMAT_KEYS) {
+      for (const t of (state.typeMixTemplates[fmt] || [])) {
+        rows.push({ format: fmt, name: t.name, mix: t.mix })
+      }
+    }
+    if (rows.length) await supabaseClient.from('type_mix_templates').insert(rows)
+  } catch(e) { console.error('[saveTypeMixTemplatesToCloud]', e) }
 }
 async function saveArticlesToCloud(type, data) {
   try {
@@ -604,11 +637,13 @@ const state = {
   filters: {}, typeData: {}, uploaded: false, activeType: '提示词一', templates: {},
   tagMatrixByType: {}, cityArticleCountByType: {},
   keywordTemplates: [], // 标题关键词模板
+  typeMixTemplates: {}, // 按平台（FORMAT_KEYS）分桶的多类型比例模板
   _heatmapFormat: 'docx', _heatmapType: '全部', _manageTab: 'types'
 }
 FORMAT_KEYS.forEach(f => {
-  state.filters[f] = { activeType: '提示词一', filterMode: 'free', cities: [], templateCounts: {}, totalCount: 100, titleFilterOn: false, preview: null, keywordTemplateId: null }
+  state.filters[f] = { activeType: '提示词一', activeTypes: [{name:'提示词一',pct:100}], filterMode: 'free', cities: [], templateCounts: {}, totalCount: 100, titleFilterOn: false, preview: null, keywordTemplateId: null }
   state.templates[f] = []
+  state.typeMixTemplates[f] = []
 })
 
 // ==================== 类型选择器更新 ====================
@@ -1230,6 +1265,134 @@ function buildHeatmapTableElement(fmt, type) {
 
 // ==================== 生成筛选页面 ====================
 function changeFilterType(format, type) { state.filters[format].activeType = type; updateFilterPage(format); saveFiltersToCloud() }
+// ==================== 多类型编辑器 ====================
+function renderTypeMixEditor(format) {
+  const container = document.getElementById('typeMixEditor-' + format)
+  if (!container) return
+  const types = getActiveTypes(format)
+  // 写入 activeTypes 数组（如果是迁移来的旧数据，这里同时落盘）
+  if (!Array.isArray(state.filters[format].activeTypes) && state.filters[format].activeType) {
+    state.filters[format].activeTypes = types
+  }
+  container.innerHTML = types.map((t, idx) => {
+    const usedArticles = (state.usedArticlesByType[t.name] || new Set()).size
+    const totalArticles = ((state.typeData[t.name] || {}).folderStructure || {})[format] || []
+    const availCount = totalArticles.filter(f => !(state.usedArticlesByType[t.name] || new Set()).has(f.name)).length
+    return '<div style="display:flex;gap:8px;align-items:center;padding:8px;background:#f8fafc;border-radius:8px;margin-bottom:6px">' +
+      '<select onchange="updateTypeMixItem(\'' + format + '\',' + idx + ',\'name\',this.value)" style="flex:1;min-width:120px;padding:8px 12px;border:2px solid var(--border);border-radius:8px;font-size:13px;outline:none;background:#fff">' +
+      state.types.map(opt => '<option value="' + opt + '" ' + (opt === t.name ? 'selected' : '') + '>' + opt + '</option>').join('') +
+      '</select>' +
+      '<input type="number" min="0" max="100" value="' + t.pct + '" onchange="updateTypeMixItem(\'' + format + '\',' + idx + ',\'pct\',this.value)" style="width:80px;padding:8px 12px;border:2px solid var(--border);border-radius:8px;font-size:13px;outline:none">' +
+      '<span style="font-size:13px;color:var(--text-muted)">%</span>' +
+      '<span style="font-size:12px;color:var(--text-muted);min-width:90px">(' + availCount + ' 篇可用)</span>' +
+      '<button class="btn-remove-city" onclick="removeTypeFromMix(\'' + format + '\',' + idx + ')" title="删除">×</button>' +
+      '</div>'
+  }).join('')
+  updateTypeMixSum(format)
+}
+function updateTypeMixItem(format, idx, field, value) {
+  const types = getActiveTypes(format)
+  if (!types[idx]) return
+  if (field === 'pct') types[idx].pct = Math.max(0, Math.min(100, parseFloat(value) || 0))
+  else types[idx].name = value
+  setActiveTypes(format, types)
+  renderTypeMixEditor(format)
+  saveFiltersToCloud()
+}
+function removeTypeFromMix(format, idx) {
+  const types = getActiveTypes(format)
+  types.splice(idx, 1)
+  if (!types.length) types.push({ name: state.types[0] || '提示词一', pct: 100 })
+  setActiveTypes(format, types)
+  renderTypeMixEditor(format)
+  saveFiltersToCloud()
+}
+function addTypeToMix(format) {
+  const types = getActiveTypes(format)
+  // 找出还没选的提示词，默认 pct=0（让用户手动填）
+  const used = new Set(types.map(t => t.name))
+  const next = state.types.find(t => !used.has(t)) || state.types[0] || '提示词一'
+  types.push({ name: next, pct: 0 })
+  setActiveTypes(format, types)
+  renderTypeMixEditor(format)
+  saveFiltersToCloud()
+}
+function updateTypeMixSum(format) {
+  const sum = getActiveTypeSum(format)
+  const sumEl = document.getElementById('typeMixSum-' + format)
+  const tipEl = document.getElementById('typeMixSumTip-' + format)
+  if (sumEl) {
+    sumEl.textContent = sum + '%'
+    sumEl.style.color = Math.abs(sum - 100) < 0.001 ? 'var(--success)' : (sum > 0 ? 'var(--warning)' : 'var(--text-muted)')
+  }
+  if (tipEl) {
+    if (Math.abs(sum - 100) < 0.001) tipEl.textContent = '✓ 可以导出'
+    else if (sum === 0) tipEl.textContent = ''
+    else if (sum < 100) tipEl.textContent = '还差 ' + (100 - sum) + '%'
+    else tipEl.textContent = '超出 ' + (sum - 100) + '%'
+  }
+  // 控制导出按钮
+  const expBtn = document.getElementById('btnExport-' + format)
+  if (expBtn && expBtn.dataset.pctValidated !== '1') {
+    // 已有预览时不要因为改 pct 而禁用，让用户重新生成预览
+  }
+}
+// ==================== 类型比例模板（按平台分桶）====================
+function renderTypeMixTemplateSelect(format) {
+  const sel = document.getElementById('mixTplSelect-' + format)
+  if (!sel) return
+  const tpls = state.typeMixTemplates[format] || []
+  sel.innerHTML = '<option value="">📋 套用模板...</option>' +
+    tpls.map((t, i) => '<option value="' + i + '">' + t.name + '</option>').join('') +
+    (tpls.length ? '<option value="__manage__">⚙️ 管理模板...</option>' : '')
+}
+function applyTypeMixTemplate(format, idxStr) {
+  if (idxStr === '' || idxStr == null) return
+  if (idxStr === '__manage__') { renderTypeMixTemplateManager(format); return }
+  const idx = parseInt(idxStr)
+  const tpl = (state.typeMixTemplates[format] || [])[idx]
+  if (!tpl) return
+  // 替换：完全覆盖当前 activeTypes
+  setActiveTypes(format, tpl.mix.map(t => ({ name: t.name, pct: t.pct })))
+  renderTypeMixEditor(format)
+  saveFiltersToCloud()
+  showToast('已套用模板「' + tpl.name + '」', 'success')
+}
+function showSaveTypeMixDialog(format) {
+  const types = getActiveTypes(format).filter(t => t.pct > 0)
+  if (!types.length) { showToast('没有比例 > 0 的提示词可保存', 'error'); return }
+  const name = prompt('给这个提示词组合起个名字（如 "旅游70+美食30"）：', '')
+  if (!name || !name.trim()) return
+  const tpls = state.typeMixTemplates[format] || []
+  if (tpls.some(t => t.name === name.trim())) { showToast('已存在同名模板', 'error'); return }
+  tpls.push({ name: name.trim(), mix: types.map(t => ({ name: t.name, pct: t.pct })) })
+  state.typeMixTemplates[format] = tpls
+  renderTypeMixTemplateSelect(format)
+  saveTypeMixTemplatesToCloud()
+  showToast('模板已保存', 'success')
+}
+function renderTypeMixTemplateManager(format) {
+  const tpls = state.typeMixTemplates[format] || []
+  let html = '<div style="margin-top:8px;padding:10px;background:#f1f5f9;border-radius:8px"><div style="font-weight:600;margin-bottom:8px">⚙️ 模板管理 - ' + PLATFORM_CONFIG[format].label + '</div>'
+  if (!tpls.length) html += '<div style="color:var(--text-muted);font-size:13px">暂无模板</div>'
+  else html += tpls.map((t, i) => '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)"><span>' + t.name + ' <span style="color:var(--text-muted);font-size:12px">' + t.mix.map(x => x.name + ' ' + x.pct + '%').join(' + ') + '</span></span><button class="btn btn-sm btn-danger" onclick="deleteTypeMixTemplate(\'' + format + '\',' + i + ')">删除</button></div>').join('')
+  html += '</div>'
+  // 插入到模板选择器下方
+  const editor = document.getElementById('typeMixEditor-' + format)
+  if (editor) {
+    const old = document.getElementById('typeMixManager-' + format)
+    if (old) old.remove()
+    const div = document.createElement('div'); div.id = 'typeMixManager-' + format; div.innerHTML = html
+    editor.parentElement.insertBefore(div, editor.nextSibling)
+  }
+}
+function deleteTypeMixTemplate(format, idx) {
+  if (!confirm('确定删除这个模板吗？')) return
+  state.typeMixTemplates[format].splice(idx, 1)
+  renderTypeMixTemplateSelect(format)
+  const mgr = document.getElementById('typeMixManager-' + format); if (mgr) mgr.remove()
+  saveTypeMixTemplatesToCloud()
+}
 function generateFilterPages() {
   FORMAT_KEYS.forEach(fmt => {
     const cfg = PLATFORM_CONFIG[fmt]
@@ -1240,10 +1403,18 @@ function generateFilterPages() {
       '<span>格式: <strong>' + cfg.ext.toUpperCase() + '</strong></span><span>·</span>' +
       '<span>可用: <strong id="avail-' + fmt + '">0</strong> 篇</span><span>·</span>' +
       '<span>已导出: <strong id="used-' + fmt + '">0</strong> 篇</span></div></div>' +
-      '<div class="card"><div class="card-title">🏷️ 选择筛选类型</div><div class="card-sub">选择要筛选哪个类型的文章</div>' +
-      '<select class="type-selector" data-format="' + fmt + '" onchange="changeFilterType(\'' + fmt + '\',this.value)" style="width:100%;padding:10px 14px;border:2px solid var(--border);border-radius:8px;font-size:14px;outline:none">' +
-      state.types.map(t => '<option value="' + t + '" ' + (t === (filter.activeType || '提示词一') ? 'selected' : '') + '>' + t + '</option>').join('') +
-      '</select></div>' +
+      '<div class="card"><div class="card-title">🏷️ 选择提示词类型 & 比例</div><div class="card-sub">可单选也可多选混合（多选时比例必须 = 100% 才能导出）</div>' +
+      '<div id="typeMixEditor-' + fmt + '"></div>' +
+      '<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+        '<button class="btn btn-sm btn-outline" onclick="addTypeToMix(\'' + fmt + '\')">＋ 添加提示词</button>' +
+        '<span style="font-size:13px">比例总和：<strong id="typeMixSum-' + fmt + '" style="color:var(--primary)">0%</strong> <span id="typeMixSumTip-' + fmt + '" style="font-size:12px;color:var(--text-muted)"></span></span>' +
+        '<span style="margin-left:auto;display:flex;gap:6px;align-items:center">' +
+          '<select id="mixTplSelect-' + fmt + '" onchange="applyTypeMixTemplate(\'' + fmt + '\',this.value)" style="padding:6px 10px;border:2px solid var(--border);border-radius:6px;font-size:12px;outline:none">' +
+            '<option value="">📋 套用模板...</option>' +
+          '</select>' +
+          '<button class="btn btn-sm btn-success" onclick="showSaveTypeMixDialog(\'' + fmt + '\')">💾 保存为模板</button>' +
+        '</span>' +
+      '</div></div>' +
       '<div class="card"><div class="card-title"><span style="background:var(--primary);color:#fff;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;margin-right:4px">1</span> 设置总篇数 & 城市（自动分配）</div>' +
       '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">' +
       '<span style="font-size:13px;font-weight:600">📊 总篇数：</span>' +
@@ -1485,17 +1656,21 @@ function syncFilterModeUI(format) {
 
 // ==================== 更新筛选页 ====================
 function updateFilterPage(format) {
-  syncFilterModeUI(format); renderTemplateList(format)
+  syncFilterModeUI(format); renderTemplateList(format); renderTypeMixEditor(format); renderTypeMixTemplateSelect(format)
   const availEl = document.getElementById('avail-' + format); const usedEl = document.getElementById('used-' + format)
   if (!availEl) return
-  const type = state.filters[format].activeType || state.activeType
-  const usedSet = state.usedArticlesByType[type] || new Set()
-  const td = state.typeData[type] || {}
-  const files = (td.folderStructure || {})[format] || []
-  const available = files.filter(f => !usedSet.has(f.name)).length
-  console.log('[updateFilterPage] format=' + format + ' activeType=' + type + ' files.length=' + files.length + ' available=' + available + ' usedSet.size=' + usedSet.size)
-  availEl.textContent = available
-  usedEl.textContent = files.length - available
+  // 多类型可用数 = 所有 pct>0 类型的可用数之和
+  const types = getActiveTypes(format).filter(t => t.pct > 0)
+  let totalAvailable = 0, totalFiles = 0
+  for (const t of types) {
+    const usedSet = state.usedArticlesByType[t.name] || new Set()
+    const td = state.typeData[t.name] || {}
+    const files = (td.folderStructure || {})[format] || []
+    totalFiles += files.length
+    totalAvailable += files.filter(f => !usedSet.has(f.name)).length
+  }
+  availEl.textContent = totalAvailable
+  usedEl.textContent = totalFiles - totalAvailable
   // 刷新总数输入框
   const totalInput = document.getElementById('totalCount-' + format)
   if (totalInput) totalInput.value = state.filters[format].totalCount || 100
