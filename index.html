@@ -278,12 +278,11 @@ async function loadAllFromCloud() {
     }
     const articlesRes = { data: allArticles }
 
-    const [typesRes, templatesRes, usedRes, filtersRes, mixTplsRes] = await Promise.all([
+    const [typesRes, templatesRes, usedRes, filtersRes] = await Promise.all([
       supabaseClient.from('types').select('name'),
       supabaseClient.from('templates').select('*'),
       supabaseClient.from('used_articles').select('type, title'),
-      supabaseClient.from('filter_configs').select('*'),
-      supabaseClient.from('type_mix_templates').select('*')
+      supabaseClient.from('filter_configs').select('*')
     ])
     await loadKeywordTemplatesFromCloud()
     // 加载类型（优先用 types 表，同时从 articles 补全，避免 articles 里有但 types 表缺失导致统计遗漏）
@@ -299,11 +298,17 @@ async function loadAllFromCloud() {
         if (state.usedArticlesByType[u.type]) state.usedArticlesByType[u.type].add(u.title)
       })
     }
-    // 加载模板
+    // 加载模板（typemix 行是"提示词比例模板"，分流到 state.typeMixTemplates）
     if (templatesRes.data) {
       FORMAT_KEYS.forEach(f => state.templates[f] = [])
+      FORMAT_KEYS.forEach(f => state.typeMixTemplates[f] = [])
       templatesRes.data.forEach(t => {
-        if (state.templates[t.format]) state.templates[t.format].push({ name: t.name, filterMode: t.filter_mode, cities: t.cities || [] })
+        if (t.filter_mode === 'typemix') {
+          if (!state.typeMixTemplates[t.format]) state.typeMixTemplates[t.format] = []
+          state.typeMixTemplates[t.format].push({ name: t.name, mix: t.cities || [] })
+        } else if (state.templates[t.format]) {
+          state.templates[t.format].push({ name: t.name, filterMode: t.filter_mode, cities: t.cities || [] })
+        }
       })
     }
     // 加载筛选配置
@@ -324,13 +329,7 @@ async function loadAllFromCloud() {
         }
       })
     }
-    // 加载类型比例模板（按平台分桶）
-    if (mixTplsRes && mixTplsRes.data) {
-      mixTplsRes.data.forEach(t => {
-        if (!state.typeMixTemplates[t.format]) state.typeMixTemplates[t.format] = []
-        state.typeMixTemplates[t.format].push({ name: t.name, mix: t.mix || [] })
-      })
-    }
+    // 类型比例模板已在上方 templates 分流时加载（filter_mode='typemix'）
     // 重建文章内存数据
     if (articlesRes.data && articlesRes.data.length > 0) {
       state.typeData = {}
@@ -382,8 +381,13 @@ async function saveTemplatesToCloud() {
   try {
     await supabaseClient.from('templates').delete().neq('format', '_')
     for (const fmt of FORMAT_KEYS) {
+      // 城市模板
       for (const t of state.templates[fmt]) {
         await supabaseClient.from('templates').upsert({ format: fmt, name: t.name, filter_mode: t.filterMode || 'free', cities: t.cities || [] })
+      }
+      // 提示词比例模板（typemix）也要重插，否则会被上面的 delete 清掉
+      for (const t of (state.typeMixTemplates[fmt] || [])) {
+        await supabaseClient.from('templates').upsert({ format: fmt, name: t.name, filter_mode: 'typemix', cities: t.mix || [] })
       }
     }
   } catch(e) {}
@@ -424,14 +428,16 @@ async function saveFiltersToCloud() {
 }
 async function saveTypeMixTemplatesToCloud() {
   try {
-    await supabaseClient.from('type_mix_templates').delete().neq('format', '_')
+    // 复用 templates 表：filter_mode='typemix'，mix 存在 cities(jsonb) 字段里
+    // 先删掉该平台所有 typemix 行，再插入当前列表
+    await supabaseClient.from('templates').delete().eq('filter_mode', 'typemix').neq('format', '_')
     const rows = []
     for (const fmt of FORMAT_KEYS) {
       for (const t of (state.typeMixTemplates[fmt] || [])) {
-        rows.push({ format: fmt, name: t.name, mix: t.mix })
+        rows.push({ format: fmt, name: t.name, filter_mode: 'typemix', cities: t.mix || [] })
       }
     }
-    if (rows.length) await supabaseClient.from('type_mix_templates').insert(rows)
+    if (rows.length) await supabaseClient.from('templates').upsert(rows)
   } catch(e) { console.error('[saveTypeMixTemplatesToCloud]', e) }
 }
 async function saveArticlesToCloud(type, data) {
@@ -1379,6 +1385,8 @@ function showSaveTypeMixDialog(format) {
   if (!name || !name.trim()) return
   const tpls = state.typeMixTemplates[format] || []
   if (tpls.some(t => t.name === name.trim())) { showToast('已存在同名模板', 'error'); return }
+  // 避免与城市模板重名（templates 表 unique(format, name)，重名会互相覆盖）
+  if ((state.templates[format] || []).some(t => t.name === name.trim())) { showToast('城市模板里已有同名模板，请换一个名字', 'error'); return }
   tpls.push({ name: name.trim(), mix: types.map(t => ({ name: t.name, pct: t.pct })) })
   state.typeMixTemplates[format] = tpls
   renderTypeMixTemplateSelect(format)
