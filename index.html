@@ -406,7 +406,16 @@ async function saveUsedToCloud() {
     if (rows.length) await supabaseClient.from('used_articles').insert(rows)
   } catch(e) {}
 }
-async function saveFiltersToCloud() {
+let _filterSaveChain = Promise.resolve()
+let _filterSaveTimer = null
+function saveFiltersToCloud() {
+  // 防抖 + 串行化：16+ 处调用点高频触发，并发 delete/upsert 会互相踩踏（409 冲突）
+  clearTimeout(_filterSaveTimer)
+  _filterSaveTimer = setTimeout(() => {
+    _filterSaveChain = _filterSaveChain.then(doSaveFiltersToCloud).catch(e => console.error('[saveFiltersToCloud]', e))
+  }, 500)
+}
+async function doSaveFiltersToCloud() {
   try {
     await supabaseClient.from('filter_configs').delete().neq('format', '_')
     for (const fmt of FORMAT_KEYS) {
@@ -422,9 +431,10 @@ async function saveFiltersToCloud() {
         folder_mode: f.folderMode || getDefaultFolderMode(fmt)
       }
       // 通用降级：库里缺哪列（PGRST204）就自动剔除哪列重试，最多 5 次
+      // onConflict 按 (format, type) 唯一约束判重，避免 409
       let tries = 0
       while (true) {
-        const { error } = await supabaseClient.from('filter_configs').upsert(row)
+        const { error } = await supabaseClient.from('filter_configs').upsert(row, { onConflict: 'format,type' })
         if (!error) break
         const m = /Could not find the '([^']+)'/i.exec(error.message || '')
         if (m && row[m[1]] !== undefined && tries < 5) {
@@ -436,7 +446,7 @@ async function saveFiltersToCloud() {
         }
       }
     }
-  } catch(e) { console.error('[saveFiltersToCloud]', e) }
+  } catch(e) { console.error('[doSaveFiltersToCloud]', e) }
 }
 async function saveTypeMixTemplatesToCloud() {
   try {
