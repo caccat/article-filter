@@ -1548,8 +1548,8 @@ function validateActiveTypePct(format) {
   if (Math.abs(sum - 100) > 0.001) return '比例总和必须 = 100%，当前 = ' + sum + '%'
   return null
 }
-function getCityAllocations(format, typeOverride) {
-  const totalCount = state.filters[format].totalCount || 100
+function getCityAllocations(format, typeOverride, countOverride) {
+  const totalCount = countOverride || state.filters[format].totalCount || 100
   if (state.filters[format].filterMode === 'template') {
     const pctSum = calcCityPctSum(format)
     if (pctSum <= 0) return []
@@ -1805,8 +1805,8 @@ function genPreview(format) {
       typeGroups.push({ type, targetCount: ta.count, actualCount: 0, noArticles: true, assignments: [], warnings: [] })
       continue
     }
-    // 关键：每个类型独立调用 getCityAllocations(format, type)，逻辑完全复用
-    const validCities = getCityAllocations(format, type)
+    // 关键：每个类型独立调用 getCityAllocations(format, type, ta.count)，逻辑完全复用
+    const validCities = getCityAllocations(format, type, ta.count)
     if (!validCities.length) {
       typeGroups.push({ type, targetCount: ta.count, actualCount: 0, noArticles: true, assignments: [], warnings: [] })
       continue
