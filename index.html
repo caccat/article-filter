@@ -280,11 +280,13 @@ async function loadAllFromCloud() {
     }
     const articlesRes = { data: allArticles }
 
-    const [typesRes, templatesRes, usedRes, filtersRes] = await Promise.all([
+    const [typesRes, templatesRes, usedRes, filtersRes, destRes] = await Promise.all([
       supabaseClient.from('types').select('name'),
       supabaseClient.from('templates').select('*'),
-      supabaseClient.from('used_articles').select('type, title'),
-      supabaseClient.from('filter_configs').select('*')
+      supabaseClient.from('used_articles').select('type, title, destination_id'),
+      supabaseClient.from('filter_configs').select('*'),
+      // 选 destination_id / name，destination_id 列可能尚未迁移——选 * 并降级
+      supabaseClient.from('destinations').select('*')
     ])
     await loadKeywordTemplatesFromCloud()
     // 加载类型（优先用 types 表，同时从 articles 补全，避免 articles 里有但 types 表缺失导致统计遗漏）
@@ -293,13 +295,42 @@ async function loadAllFromCloud() {
     if (articlesRes.data) articlesRes.data.forEach(a => typeSet.add(a.type))
     if (typeSet.size === 0) typeSet.add('提示词一')
     state.types = Array.from(typeSet)
-    state.types.forEach(t => { if (!state.usedArticlesByType[t]) state.usedArticlesByType[t] = new Set() })
-    // 加载已用文章
+    state.types.forEach(t => {
+      if (!state.usedArticlesByType[t]) state.usedArticlesByType[t] = new Set()
+      if (!state.usedVideoArticles[t]) state.usedVideoArticles[t] = {}
+    })
+    // 加载已用文章：非 video 行 → usedArticlesByType；video 行（destination_id 非空）→ usedVideoArticles
     if (usedRes.data) {
       usedRes.data.forEach(u => {
-        if (state.usedArticlesByType[u.type]) state.usedArticlesByType[u.type].add(u.title)
+        if (!state.usedArticlesByType[u.type]) state.usedArticlesByType[u.type] = new Set()
+        if (u.destination_id) {
+          // 视频专用二维已用集
+          if (!state.usedVideoArticles[u.type]) state.usedVideoArticles[u.type] = {}
+          if (!state.usedVideoArticles[u.type][u.destination_id]) state.usedVideoArticles[u.type][u.destination_id] = new Set()
+          state.usedVideoArticles[u.type][u.destination_id].add(u.title)
+        } else {
+          state.usedArticlesByType[u.type].add(u.title)
+        }
       })
     }
+    // 加载分发目标（destinations 表；缺表时降级为预置默认）
+    if (destRes && destRes.data && !destRes.error) {
+      state.destinations = destRes.data.map(d => ({ id: d.id, name: d.name }))
+      console.log('[load] 加载分发目标', state.destinations.length, '个')
+      // 首次进入且表为空 → 预置 2 个常用目标（用户能改/删）
+      if (state.destinations.length === 0) {
+        console.log('[load] 首次进入，预置抖音/微信视频号两个默认目标')
+        await seedDefaultDestinations()
+      }
+    } else if (destRes && destRes.error) {
+      console.warn('[load] destinations 表不存在或查询失败，按空列表处理：', destRes.error)
+      state.destinations = []
+    }
+    // 恢复视频页当前目标（localStorage 持久化）
+    try {
+      const saved = localStorage.getItem('videoDestId')
+      if (saved && state.destinations.some(d => d.id === saved)) state._videoDestId = saved
+    } catch(e) { /* localStorage 可能被禁用 */ }
     // 加载模板（typemix 行是"提示词比例模板"，分流到 state.typeMixTemplates）
     if (templatesRes.data) {
       console.log('[load] templates 总数 =', templatesRes.data.length, 'typemix 行 =', templatesRes.data.filter(t => t.filter_mode === 'typemix').length)
@@ -402,10 +433,34 @@ async function saveUsedToCloud() {
   try {
     await supabaseClient.from('used_articles').delete().neq('type', '_')
     const rows = []
+    // 非视频：destination_id 留空（旧行为）
     for (const [type, set] of Object.entries(state.usedArticlesByType)) {
-      for (const title of set) rows.push({ type, title })
+      for (const title of set) rows.push({ type, title, destination_id: null })
     }
-    if (rows.length) await supabaseClient.from('used_articles').insert(rows)
+    // 视频：每条带 destination_id
+    for (const [type, destMap] of Object.entries(state.usedVideoArticles)) {
+      for (const [destId, set] of Object.entries(destMap)) {
+        for (const title of set) rows.push({ type, title, destination_id: destId })
+      }
+    }
+    if (rows.length) {
+      // 通用降级：库缺 destination_id 列时自动剔除重试
+      let tries = 0
+      let toInsert = rows
+      while (toInsert.length) {
+        const { error } = await supabaseClient.from('used_articles').insert(toInsert)
+        if (!error) break
+        const m = /Could not find the '([^']+)'/i.exec(error.message || '')
+        if (m && m[1] === 'destination_id' && tries < 5) {
+          console.warn('[saveUsedToCloud] used_articles 缺少 destination_id 列，降级保存。建议执行 migration 004')
+          toInsert = toInsert.map(r => ({ type: r.type, title: r.title }))
+          tries++
+        } else {
+          console.error('[saveUsedToCloud] insert 失败:', error)
+          break
+        }
+      }
+    }
   } catch(e) {}
 }
 let _filterSaveChain = Promise.resolve()
@@ -684,6 +739,13 @@ let cityIdCounter = 0, currentPage = 'upload'
 
 const state = {
   types: ['提示词一'], usedArticlesByType: { '提示词一': new Set() },
+  // 视频专用：二维已用集 usedVideoArticles[type][destId] = Set<title>
+  // 与 usedArticlesByType 完全独立——usedArticlesByType 给图文/头条/资讯/搜狐等老平台用
+  usedVideoArticles: { '提示词一': {} },
+  // 分发目标（用户管理，云端共享）：{id, name}
+  destinations: [],
+  // 视频页当前选中的分发目标 id（仅 UI 状态，存 localStorage 不上云）
+  _videoDestId: null,
   filters: {}, typeData: {}, uploaded: false, activeType: '提示词一', templates: {},
   tagMatrixByType: {}, cityArticleCountByType: {},
   keywordTemplates: [], // 标题关键词模板
@@ -691,11 +753,73 @@ const state = {
   _editMixTpl: null, // 管理页正在编辑的比例模板 {format, idx}
   _heatmapFormat: 'docx', _heatmapType: '全部', _manageTab: 'types'
 }
+// 视频专用禁止字符（文件夹路径会用到，避免和 Windows/macOS 文件系统冲突）
+const VIDEO_DEST_FORBIDDEN_CHARS = /[\\\/\:\*\?\"\<\>\|]/
 FORMAT_KEYS.forEach(f => {
   state.filters[f] = { activeType: '提示词一', activeTypes: [{name:'提示词一',pct:100}], filterMode: 'free', cities: [], templateCounts: {}, totalCount: 100, titleFilterOn: false, preview: null, keywordTemplateId: null, folderMode: getDefaultFolderMode(f) }
   state.templates[f] = []
   state.typeMixTemplates[f] = []
 })
+
+// ==================== 已用集统一接口 ====================
+// 所有需要"取某 type 的已用集"的地方统一调用此函数，避免分散判断
+// video 走二维 usedVideoArticles[type][destId]；其他格式走 usedArticlesByType[type]
+// 视频未选目标时返回空集（=全部"已用"，等价于无可用文章）
+function getEffectiveUsedSet(type, format) {
+  if (format === 'video') {
+    if (!state._videoDestId) return new Set() // 未选目标→全屏蔽
+    return (state.usedVideoArticles[type] || {})[state._videoDestId] || new Set()
+  }
+  return state.usedArticlesByType[type] || new Set()
+}
+// 视频用：写入已用集（自动初始化嵌套对象）
+function addToVideoUsedSet(type, destId, title) {
+  if (!state.usedVideoArticles[type]) state.usedVideoArticles[type] = {}
+  if (!state.usedVideoArticles[type][destId]) state.usedVideoArticles[type][destId] = new Set()
+  state.usedVideoArticles[type][destId].add(title)
+}
+// 视频用：清空某 (type, destId) 已用集
+function clearVideoUsedSet(type, destId) {
+  if (state.usedVideoArticles[type]) {
+    if (destId) delete state.usedVideoArticles[type][destId]
+    else state.usedVideoArticles[type] = {} // 清空整 type
+  }
+}
+// 视频用：删除某 destId 下所有已用记录（管理目标被删时调用）
+function deleteDestIdFromVideoUsedSets(destId) {
+  for (const t of Object.keys(state.usedVideoArticles)) {
+    if (state.usedVideoArticles[t] && state.usedVideoArticles[t][destId]) {
+      delete state.usedVideoArticles[t][destId]
+    }
+  }
+}
+// 校验分发目标名：是否合法（非空、不超长、不含禁用字符、不与已有重名）
+function validateDestName(name, selfId) {
+  if (!name || !name.trim()) return '名称不能为空'
+  const trimmed = name.trim()
+  if (trimmed.length > 24) return '名称过长（限 24 字符）'
+  if (VIDEO_DEST_FORBIDDEN_CHARS.test(trimmed)) return '名称含禁止字符（\\ / : * ? " < > |）'
+  if (state.destinations.some(d => d.id !== selfId && d.name === trimmed)) return '名称已存在'
+  return null
+}
+// 首次进入时预置 2 个常用目标（写入云端并刷新 state）
+async function seedDefaultDestinations() {
+  try {
+    const defaults = ['抖音', '微信视频号']
+    const rows = defaults.map(name => ({ name }))
+    const { data, error } = await supabaseClient.from('destinations').insert(rows).select('*')
+    if (error) {
+      // 表不存在（未迁移）或 unique 冲突（已存在）都安全降级
+      if (/duplicate key/i.test(error.message || '') || /relation .* does not exist/i.test(error.message || '')) {
+        console.warn('[seedDefaultDestinations] 已存在或表缺失，跳过:', error.message)
+        return
+      }
+      console.error('[seedDefaultDestinations]', error)
+      return
+    }
+    state.destinations = (data || []).map(d => ({ id: d.id, name: d.name }))
+  } catch(e) { console.error('[seedDefaultDestinations] 异常:', e) }
+}
 
 // ==================== 类型选择器更新 ====================
 function updateTypeSelectors() {
@@ -719,6 +843,7 @@ async function addType(name) {
   name = name.trim()
   if (state.types.includes(name)) { showToast('类型已存在','error'); return }
   state.types.push(name); state.usedArticlesByType[name] = new Set()
+  state.usedVideoArticles[name] = {}
   await saveTypesToCloud(); updateTypeSelectors(); renderManage()
   FORMAT_KEYS.forEach(f => updateFilterPage(f)); renderOverview()
   showToast('类型「' + name + '」已创建 ✅','success')
@@ -729,6 +854,8 @@ async function renameType(oldName, newName) {
   state.types[idx] = newName
   state.usedArticlesByType[newName] = state.usedArticlesByType[oldName] || new Set()
   if (oldName !== newName) delete state.usedArticlesByType[oldName]
+  state.usedVideoArticles[newName] = state.usedVideoArticles[oldName] || {}
+  if (oldName !== newName) delete state.usedVideoArticles[oldName]
   if (state.activeType === oldName) state.activeType = newName
   if (state.typeData[oldName]) { state.typeData[newName] = state.typeData[oldName]; delete state.typeData[oldName] }
   if (state.tagMatrixByType[oldName]) { state.tagMatrixByType[newName] = state.tagMatrixByType[oldName]; delete state.tagMatrixByType[oldName] }
@@ -741,9 +868,10 @@ async function renameType(oldName, newName) {
 async function removeType(name) {
   const idx = state.types.indexOf(name); if (idx === -1) return
   state.types.splice(idx, 1); delete state.usedArticlesByType[name]
+  delete state.usedVideoArticles[name]
   delete state.typeData[name]; delete state.tagMatrixByType[name]; delete state.cityArticleCountByType[name]
   if (state.activeType === name) state.activeType = state.types[0] || '提示词一'
-  if (state.types.length === 0) { state.types.push('提示词一'); state.usedArticlesByType['提示词一'] = new Set() }
+  if (state.types.length === 0) { state.types.push('提示词一'); state.usedArticlesByType['提示词一'] = new Set(); state.usedVideoArticles['提示词一'] = {} }
   state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t]?.folderStructure || {}).length > 0)
   await Promise.all([saveTypesToCloud(), saveUsedToCloud(), supabaseClient.from('articles').delete().eq('type', name), supabaseClient.from('types').delete().eq('name', name)])
   updateTypeSelectors(); renderManage()
@@ -1139,7 +1267,7 @@ async function confirmType() {
   let typeName = select.value
   if (input.value.trim()) typeName = input.value.trim()
   if (!typeName) { showToast('请选择或输入类型名称','error'); return }
-  if (!state.types.includes(typeName)) { state.types.push(typeName); state.usedArticlesByType[typeName] = new Set() }
+  if (!state.types.includes(typeName)) { state.types.push(typeName); state.usedArticlesByType[typeName] = new Set(); state.usedVideoArticles[typeName] = {} }
   state.activeType = typeName
   FORMAT_KEYS.forEach(f => { state.filters[f].activeType = typeName })
   let thisUploadCount = 0
@@ -1237,6 +1365,7 @@ async function resetUpload() {
   state.typeData = {}; state.uploaded = false
   // 清空所有已导出记录（因为所有文章数据都没了）
   state.usedArticlesByType = {}
+  state.usedVideoArticles = {}
   state.tagMatrixByType = {}; state.cityArticleCountByType = {}
   document.getElementById('uploadZone').classList.remove('has-files')
   document.getElementById('uploadSuccess').classList.remove('visible')
@@ -1262,7 +1391,7 @@ function buildTagMatrix() {
       state.tagMatrixByType[type][fmt] = {}; state.cityArticleCountByType[type][fmt] = {}
       TEMPLATE_CITIES.forEach(c => { state.tagMatrixByType[type][fmt][c] = {}; state.cityArticleCountByType[type][fmt][c] = 0; KEYWORDS.forEach(k => state.tagMatrixByType[type][fmt][c][k.word] = 0) })
       const files = fs[fmt] || []
-      const usedSet = state.usedArticlesByType[type] || new Set()
+      const usedSet = getEffectiveUsedSet(type, fmt)
       for (const f of files) {
         if (usedSet.has(f.name)) continue
         const mc = f.city
@@ -1334,9 +1463,10 @@ function renderTypeMixEditor(format) {
     state.filters[format].activeTypes = types
   }
   container.innerHTML = types.map((t, idx) => {
-    const usedArticles = (state.usedArticlesByType[t.name] || new Set()).size
+    const usedSet = getEffectiveUsedSet(t.name, format)
+    const usedArticles = usedSet.size
     const totalArticles = ((state.typeData[t.name] || {}).folderStructure || {})[format] || []
-    const availCount = totalArticles.filter(f => !(state.usedArticlesByType[t.name] || new Set()).has(f.name)).length
+    const availCount = totalArticles.filter(f => !usedSet.has(f.name)).length
     return '<div style="display:flex;gap:8px;align-items:center;padding:8px;background:#f8fafc;border-radius:8px;margin-bottom:6px">' +
       '<select onchange="updateTypeMixItem(\'' + format + '\',' + idx + ',\'name\',this.value)" style="flex:1;min-width:120px;padding:8px 12px;border:2px solid var(--border);border-radius:8px;font-size:13px;outline:none;background:#fff">' +
       state.types.map(opt => '<option value="' + opt + '" ' + (opt === t.name ? 'selected' : '') + '>' + opt + '</option>').join('') +
@@ -1501,6 +1631,180 @@ function saveMixTplEdit(format, idx) {
   renderTypeMixTemplateSelect(format)
   showToast('模板已更新 ✅', 'success')
 }
+// ==================== 视频专用：分发目标选择器卡片 ====================
+// 渲染到视频页顶部的小卡片：选择当前目标 + 打开管理弹窗
+function renderVideoDestCard() {
+  const opts = state.destinations.map(d =>
+    '<option value="' + d.id + '"' + (d.id === state._videoDestId ? ' selected' : '') + '>' + escapeHtml(d.name) + '</option>'
+  ).join('')
+  const curName = state.destinations.find(d => d.id === state._videoDestId)?.name
+  return '<div class="card" style="background:linear-gradient(135deg,#fef3c7,#fde68a);border:2px solid #fbbf24">' +
+    '<div class="card-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+      '<span>📡 分发目标</span>' +
+      '<span style="font-size:12px;color:var(--text-muted);font-weight:400">（每个目标独立维护已导出记录，避免重复）</span>' +
+    '</div>' +
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+      '<span style="font-size:13px;font-weight:600">当前目标：</span>' +
+      '<select id="videoDestSelect" onchange="changeVideoDest(this.value)" style="flex:1;min-width:180px;padding:8px 12px;border:2px solid var(--border);border-radius:8px;font-size:14px;outline:none;background:#fff">' +
+        '<option value="">— 请选择分发目标 —</option>' +
+        opts +
+      '</select>' +
+      '<button class="btn btn-sm btn-outline" onclick="openDestManageModal()">⚙️ 管理目标</button>' +
+    '</div>' +
+    (curName
+      ? '<div style="margin-top:8px;font-size:12px;color:var(--text-muted)">已选：「' + escapeHtml(curName) + '」 — 在该目标下已导出的视频不会再次出现</div>'
+      : '<div style="margin-top:8px;font-size:12px;color:var(--danger)">⚠ 未选目标：预览按钮已禁用，所有视频均视为"已用"</div>') +
+  '</div>'
+}
+
+// 切换当前目标（含弹窗确认）
+async function changeVideoDest(newDestId) {
+  if (newDestId === state._videoDestId) return
+  // 若有当前预览，提示切换会清空预览
+  if (state.filters.video && state.filters.video.preview) {
+    if (!confirm('切换分发目标会清空当前预览（已选好的视频会被丢弃），确认继续？')) {
+      // 回滚 select
+      const sel = document.getElementById('videoDestSelect')
+      if (sel) sel.value = state._videoDestId || ''
+      return
+    }
+    state.filters.video.preview = null
+    const btn = document.getElementById('btnExport-video'); if (btn) btn.disabled = true
+    const preview = document.getElementById('preview-video')
+    if (preview) preview.innerHTML = '<div class="empty-state"><span class="icon">🔍</span><p>设置城市和数量后生成预览</p></div>'
+    const stats = document.getElementById('stats-video'); if (stats) { stats.classList.add('hidden'); stats.innerHTML = '' }
+  }
+  state._videoDestId = newDestId || null
+  try { localStorage.setItem('videoDestId', state._videoDestId || '') } catch(e) {}
+  // 清预览缓存
+  state.filters.video.preview = null
+  const btn = document.getElementById('btnExport-video'); if (btn) btn.disabled = true
+  const preview = document.getElementById('preview-video')
+  if (preview) preview.innerHTML = '<div class="empty-state"><span class="icon">🔍</span><p>设置城市和数量后生成预览</p></div>'
+  const stats = document.getElementById('stats-video'); if (stats) { stats.classList.add('hidden'); stats.innerHTML = '' }
+  // 重新刷新视频页的卡片与统计
+  const cardHolder = document.querySelector('#page-video .card')
+  if (cardHolder) cardHolder.outerHTML = renderVideoDestCard()
+  updateNavBadges(); updateFilterPage('video'); renderOverview()
+  showToast(newDestId ? '已切换到「' + (state.destinations.find(d => d.id === newDestId)?.name || '') + '」' : '已清空目标选择', 'info')
+}
+
+// ==================== 视频专用：管理目标弹窗 ====================
+function openDestManageModal() {
+  const existing = document.getElementById('destManageModal'); if (existing) existing.remove()
+  const wrap = document.createElement('div'); wrap.className = 'modal show'; wrap.id = 'destManageModal'
+  wrap.innerHTML = '<div class="modal-content" style="max-width:520px;max-height:80vh;overflow-y:auto" onclick="event.stopPropagation()">' +
+    '<div class="modal-title">⚙️ 管理分发目标</div>' +
+    '<div id="destListBody"></div>' +
+    '<div style="margin-top:14px;padding:10px 12px;background:#fef3c7;border:1px solid #fbbf24;border-radius:8px;font-size:12px;color:#92400e">' +
+      '⚠️ 禁止使用字符：<code>\\ / : * ? " &lt; &gt; |</code><br>（文件夹路径会用到这些字符）' +
+    '</div>' +
+    '<div style="margin-top:14px"><div class="card-title" style="font-size:13px">➕ 添加新目标</div>' +
+      '<div style="display:flex;gap:8px;margin-top:8px">' +
+        '<input id="newDestInput" placeholder="输入目标名称..." style="flex:1;padding:8px 12px;border:2px solid var(--border);border-radius:8px;font-size:13px;outline:none" onkeydown="if(event.key===\'Enter\')addDestination()">' +
+        '<button class="btn btn-primary btn-sm" onclick="addDestination()">添加</button>' +
+      '</div></div>' +
+    '<div style="margin-top:16px;display:flex;justify-content:flex-end"><button class="btn" onclick="document.getElementById(\'destManageModal\').remove()">关闭</button></div>' +
+  '</div>'
+  wrap.onclick = () => wrap.remove()
+  document.body.appendChild(wrap)
+  renderDestList()
+}
+
+function renderDestList() {
+  const body = document.getElementById('destListBody'); if (!body) return
+  if (!state.destinations.length) {
+    body.innerHTML = '<div style="font-size:13px;color:var(--text-muted);text-align:center;padding:20px">暂无目标，请下方添加</div>'
+    return
+  }
+  body.innerHTML = state.destinations.map(d => {
+    const cur = d.id === state._videoDestId ? ' <span style="color:var(--primary);font-size:11px">●当前</span>' : ''
+    return '<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#f8fafc;border-radius:8px;border:1px solid var(--border);margin-bottom:6px">' +
+      '<span style="flex:1;font-weight:600">📡 ' + escapeHtml(d.name) + cur + '</span>' +
+      '<button class="btn btn-sm btn-outline" onclick="renameDestination(\'' + d.id + '\')">✏️ 重命名</button>' +
+      '<button class="btn btn-sm btn-danger" onclick="deleteDestination(\'' + d.id + '\')">🗑 删除</button>' +
+    '</div>'
+  }).join('')
+}
+
+async function addDestination() {
+  const input = document.getElementById('newDestInput')
+  if (!input) return
+  const name = input.value
+  const err = validateDestName(name, null)
+  if (err) { showToast(err, 'error'); return }
+  const trimmed = name.trim()
+  const { data, error } = await supabaseClient.from('destinations').insert({ name: trimmed }).select('*').single()
+  if (error) {
+    if (/duplicate key/i.test(error.message || '')) showToast('名称已存在', 'error')
+    else { console.error('[addDestination]', error); showToast('添加失败：' + error.message, 'error') }
+    return
+  }
+  state.destinations.push({ id: data.id, name: data.name })
+  input.value = ''
+  renderDestList()
+  showToast('已添加「' + trimmed + '」', 'success')
+}
+
+async function renameDestination(id) {
+  const dest = state.destinations.find(d => d.id === id); if (!dest) return
+  const newName = prompt('新名称：', dest.name)
+  if (newName == null) return
+  const err = validateDestName(newName, id)
+  if (err) { showToast(err, 'error'); return }
+  const trimmed = newName.trim()
+  const { error } = await supabaseClient.from('destinations').update({ name: trimmed }).eq('id', id)
+  if (error) {
+    if (/duplicate key/i.test(error.message || '')) showToast('名称已存在', 'error')
+    else { console.error('[renameDestination]', error); showToast('重命名失败：' + error.message, 'error') }
+    return
+  }
+  dest.name = trimmed
+  renderDestList()
+  // 刷新视频页 select
+  const cardHolder = document.querySelector('#page-video .card')
+  if (cardHolder) cardHolder.outerHTML = renderVideoDestCard()
+  showToast('已重命名', 'success')
+}
+
+async function deleteDestination(id) {
+  const dest = state.destinations.find(d => d.id === id); if (!dest) return
+  // 计算该目标下的已用记录数
+  let usedCount = 0
+  for (const t of Object.keys(state.usedVideoArticles)) {
+    if (state.usedVideoArticles[t] && state.usedVideoArticles[t][id]) {
+      usedCount += state.usedVideoArticles[t][id].size
+    }
+  }
+  const msg = '确认删除目标「' + dest.name + '」？' +
+    (usedCount > 0 ? '\n\n将一并删除该目标下的 ' + usedCount + ' 条已用记录。' : '') +
+    (state.destinations.length === 1 ? '\n\n⚠️ 这是最后一个目标，删除后无法导出视频。' : '')
+  if (!confirm(msg)) return
+  // 双重确认（最后一个目标）
+  if (state.destinations.length === 1) {
+    if (!confirm('再次确认：删除最后一个目标「' + dest.name + '」？')) return
+  }
+  // 先删云端
+  const { error } = await supabaseClient.from('destinations').delete().eq('id', id)
+  if (error) { console.error('[deleteDestination]', error); showToast('删除失败：' + error.message, 'error'); return }
+  // 删本地 + 已用集
+  state.destinations = state.destinations.filter(d => d.id !== id)
+  deleteDestIdFromVideoUsedSets(id)
+  // 如果是当前选中目标，重置
+  if (state._videoDestId === id) {
+    state._videoDestId = null
+    try { localStorage.removeItem('videoDestId') } catch(e) {}
+  }
+  // 删云端 used_articles 该目标行（saveUsedToCloud 会全删全插兜底）
+  await saveUsedToCloud()
+  renderDestList()
+  // 刷新视频页 select
+  const cardHolder = document.querySelector('#page-video .card')
+  if (cardHolder) cardHolder.outerHTML = renderVideoDestCard()
+  updateNavBadges(); updateFilterPage('video'); renderOverview(); renderManage()
+  showToast('已删除目标', 'info')
+}
+
 function generateFilterPages() {
   FORMAT_KEYS.forEach(fmt => {
     const cfg = PLATFORM_CONFIG[fmt]
@@ -1511,6 +1815,8 @@ function generateFilterPages() {
       '<span>格式: <strong>' + cfg.ext.toUpperCase() + '</strong></span><span>·</span>' +
       '<span>可用: <strong id="avail-' + fmt + '">0</strong> 篇</span><span>·</span>' +
       '<span>已导出: <strong id="used-' + fmt + '">0</strong> 篇</span></div></div>' +
+      // 视频专用：分发目标选择器（仅 video 渲染）
+      (fmt === 'video' ? renderVideoDestCard() : '') +
       '<div class="card"><div class="card-title">🏷️ 选择提示词类型 & 比例</div><div class="card-sub">可单选也可多选混合（多选时比例必须 = 100% 才能导出）</div>' +
       '<div id="typeMixEditor-' + fmt + '"></div>' +
       '<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
@@ -1678,7 +1984,7 @@ function getCityAllocations(format, typeOverride, countOverride) {
   // 自由筛选：按各城市可用文章数比例自动分配
   // typeOverride 用于多类型导出场景：每个类型独立调用一次，传不同 type
   const type = typeOverride || state.filters[format].activeType || state.activeType
-  const usedSet = state.usedArticlesByType[type] || new Set()
+  const usedSet = getEffectiveUsedSet(type, format)
   const td = state.typeData[type] || {}
   const files = ((td.folderStructure || {})[format] || []).filter(f => !usedSet.has(f.name))
   if (!files.length) return []
@@ -1782,7 +2088,7 @@ function updateFilterPage(format) {
   const types = getActiveTypes(format).filter(t => t.pct > 0)
   let totalAvailable = 0, totalFiles = 0
   for (const t of types) {
-    const usedSet = state.usedArticlesByType[t.name] || new Set()
+    const usedSet = getEffectiveUsedSet(t.name, format)
     const td = state.typeData[t.name] || {}
     const files = (td.folderStructure || {})[format] || []
     totalFiles += files.length
@@ -1814,13 +2120,17 @@ function updateNavBadges() {
   FORMAT_KEYS.forEach(fmt => {
     let totalAvail = 0
     state.types.forEach(t => {
-      const usedSet = state.usedArticlesByType[t] || new Set()
+      const usedSet = getEffectiveUsedSet(t, fmt)
       const td = state.typeData[t] || {}
       const files = (td.folderStructure || {})[fmt] || []
       totalAvail += files.filter(f => !usedSet.has(f.name)).length
     })
     const badge = document.getElementById('badge-' + fmt)
-    if (badge) badge.textContent = totalAvail
+    if (badge) {
+      // 视频未选目标时显示 "—"，提示用户选目标
+      if (fmt === 'video' && !state._videoDestId) badge.textContent = '—'
+      else badge.textContent = totalAvail
+    }
   })
 }
 
@@ -1901,6 +2211,10 @@ function hybridKeywordFilter(titlePool, totalNeeded, keywords, greedyRatio) {
 
 // ==================== 生成预览 ====================
 function genPreview(format) {
+  // 视频必须先选分发目标（防误用 + 数据完整性）
+  if (format === 'video' && !state._videoDestId) {
+    showToast('请先选择分发目标', 'error'); return
+  }
   // 1. 校验类型比例
   const pctErr = validateActiveTypePct(format)
   if (pctErr) { showToast(pctErr, 'error'); return }
@@ -1913,7 +2227,7 @@ function genPreview(format) {
   const typeGroups = []
   for (const ta of typeAllocs) {
     const type = ta.name
-    const usedSet = state.usedArticlesByType[type] || new Set()
+    const usedSet = getEffectiveUsedSet(type, format)
     const td = state.typeData[type] || {}
     const files = ((td.folderStructure || {})[format] || []).filter(f => !usedSet.has(f.name))
     const availableNames = [...new Set(files.map(f => f.name))]
@@ -2154,6 +2468,8 @@ let exportRunning = false
 
 function exportFormat(format) {
   const cfg = PLATFORM_CONFIG[format]
+  // 视频必须先选分发目标（防误用 + 数据完整性）
+  if (format === 'video' && !state._videoDestId) { showToast('请先选择分发目标','error'); return }
   if (!state.filters[format].preview) { showToast('请先生成预览','error'); return }
   if (exportingFormats.has(format)) { showToast('「' + cfg.label + '」已在导出队列中','info'); return }
   exportingFormats.add(format)
@@ -2299,8 +2615,14 @@ async function exportFormatNow(format) {
       toCleanByType[t.sourceType].add(t.m.name)
     }
     for (const [sourceType, names] of Object.entries(toCleanByType)) {
-      const usedSet = state.usedArticlesByType[sourceType] || new Set()
-      names.forEach(n => usedSet.add(n))  // 标记源类型已用
+      // 视频专用二维已用集（按当前目标写入）；其它格式走老路径
+      if (format === 'video') {
+        const destId = state._videoDestId
+        if (destId) for (const n of names) addToVideoUsedSet(sourceType, destId, n)
+      } else {
+        const usedSet = state.usedArticlesByType[sourceType] || new Set()
+        names.forEach(n => usedSet.add(n))  // 标记源类型已用
+      }
       // 删除 typeData 文件
       const ttd = state.typeData[sourceType]
       if (ttd && ttd.folderStructure && ttd.folderStructure[format]) {
@@ -2321,9 +2643,14 @@ async function exportFormatNow(format) {
     // 借调场景：目标类型的 usedSet 也要标记
     for (const t of tasks) {
       if (t.sourceType !== t.targetType) {
-        const targetUsed = state.usedArticlesByType[t.targetType] || new Set()
-        targetUsed.add(t.m.name)
-        state.usedArticlesByType[t.targetType] = targetUsed
+        if (format === 'video') {
+          const destId = state._videoDestId
+          if (destId) addToVideoUsedSet(t.targetType, destId, t.m.name)
+        } else {
+          const targetUsed = state.usedArticlesByType[t.targetType] || new Set()
+          targetUsed.add(t.m.name)
+          state.usedArticlesByType[t.targetType] = targetUsed
+        }
       }
     }
     state.uploaded = Object.keys(state.typeData).some(t =>
@@ -2411,25 +2738,136 @@ function renderManageTab(tab) {
     }); h += '</div>'; el.innerHTML = h
   } else if (tab === 'used') {
     let h = '<div class="card"><div class="card-title">🔄 已用文章管理</div>'
+    h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">视频按 (提示词·目标) 二维显示；其它格式按提示词显示</div>'
     state.types.forEach(t => {
-      const usedSet = state.usedArticlesByType[t] || new Set()
-      h += '<div style="margin-bottom:10px"><div style="font-weight:600;font-size:14px;margin-bottom:4px">' + t + '（已用 ' + usedSet.size + ' 篇）</div>'
-      if (usedSet.size > 0) {
-        h += '<div style="max-height:150px;overflow-y:auto;font-size:12px;color:var(--text-muted);line-height:1.8;background:#f8fafc;padding:8px 12px;border-radius:8px;border:1px solid var(--border)">'
-        usedSet.forEach(title => h += title + '<br>')
-        h += '</div><button class="btn btn-sm btn-danger" style="margin-top:6px" onclick="clearUsedArticles(\'' + t + '\')">清空记录</button>'
-      } else h += '<div style="font-size:12px;color:var(--text-muted)">暂无导出记录</div>'
+      // 视频专用：按 destId 分桶展示
+      const videoMap = state.usedVideoArticles[t] || {}
+      const nonVideoUsed = state.usedArticlesByType[t] || new Set()
+      const hasAny = Object.keys(videoMap).length > 0 || nonVideoUsed.size > 0
+      h += '<div style="margin-bottom:14px;padding:10px 12px;background:#f8fafc;border-radius:10px;border:1px solid var(--border)">'
+      h += '<div style="font-weight:600;font-size:14px;margin-bottom:8px">🏷️ ' + t + '</div>'
+      // 视频目标分桶
+      for (const [destId, set] of Object.entries(videoMap)) {
+        if (set.size === 0) continue
+        const destName = (state.destinations.find(d => d.id === destId) || {name: '已删除目标'}).name
+        h += '<div style="margin-bottom:6px"><div style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600">' +
+          '<span>📡 ' + destName + '</span><span style="color:var(--text-muted);font-weight:400">（' + set.size + ' 篇）</span>' +
+          '<button class="btn btn-sm btn-outline" style="margin-left:auto" onclick="showUsedList(\'' + t + '\',\'video\',\'' + destId + '\')">查看</button>' +
+          '<button class="btn btn-sm btn-danger" onclick="clearVideoUsedArticles(\'' + t + '\',\'' + destId + '\')">清空此目标</button></div></div>'
+      }
+      // 非视频（docx/excel/ptxt/txt 合计）
+      if (nonVideoUsed.size > 0) {
+        h += '<div style="margin-bottom:6px"><div style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600">' +
+          '<span>📄 其它格式</span><span style="color:var(--text-muted);font-weight:400">（' + nonVideoUsed.size + ' 篇）</span>' +
+          '<button class="btn btn-sm btn-outline" style="margin-left:auto" onclick="showUsedList(\'' + t + '\',\'nonvideo\',null)">查看</button>' +
+          '<button class="btn btn-sm btn-danger" onclick="clearNonVideoUsedArticles(\'' + t + '\')">清空</button></div></div>'
+      }
+      if (!hasAny) h += '<div style="font-size:12px;color:var(--text-muted)">暂无导出记录</div>'
       h += '</div>'
-    }); h += '</div>'; el.innerHTML = h
+    })
+    // 锦上添花：按目标批量清空（把所有提示词下该目标的记录全删）
+    if (state.destinations.length > 0) {
+      h += '<div class="card" style="margin-top:14px"><div class="card-title">📡 按目标批量清空</div>'
+      h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">清空将影响：所有提示词类型在该目标下的已导出记录</div>'
+      h += state.destinations.map(d => '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:#fff;border-radius:6px;border:1px solid var(--border);margin-bottom:4px">' +
+        '<span style="flex:1">📡 ' + d.name + '</span>' +
+        '<button class="btn btn-sm btn-danger" onclick="clearVideoUsedByDestOnly(\'' + d.id + '\')">清空此目标全部记录</button></div>').join('')
+      h += '</div>'
+    }
+    h += '</div>'; el.innerHTML = h
   }
 }
+// 弹窗显示已用列表（带单条删除入口）
+async function showUsedList(type, kind, destId) {
+  const set = kind === 'video'
+    ? ((state.usedVideoArticles[type] || {})[destId] || new Set())
+    : (state.usedArticlesByType[type] || new Set())
+  const destName = kind === 'video' ? ((state.destinations.find(d => d.id === destId) || {name:'已删除'}).name) : ''
+  const items = Array.from(set).sort()
+  const html = items.length
+    ? items.map(title =>
+        '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:#f8fafc;border-radius:6px;border:1px solid var(--border);margin-bottom:4px;font-size:13px">' +
+        '<span style="flex:1">' + escapeHtml(title) + '</span>' +
+        '<button class="btn btn-sm btn-danger" onclick="deleteSingleUsed(\'' + escapeAttr(type) + '\',\'' + kind + '\',\'' + (destId || '') + '\',\'' + escapeAttr(title) + '\')">删除</button>' +
+        '</div>').join('')
+    : '<div style="font-size:13px;color:var(--text-muted);text-align:center;padding:20px">暂无记录</div>'
+  showModal({
+    title: '📋 已用文章列表' + (destName ? ' - ' + destName : ''),
+    body: html,
+    footer: '<button class="btn" onclick="closeTopModal()">关闭</button>'
+  })
+}
+// 单条删除
+async function deleteSingleUsed(type, kind, destId, title) {
+  if (!confirm('确认删除单条已用记录？')) return
+  if (kind === 'video') {
+    const set = (state.usedVideoArticles[type] || {})[destId]
+    if (set) { set.delete(title); if (set.size === 0) delete state.usedVideoArticles[type][destId] }
+  } else {
+    const set = state.usedArticlesByType[type]
+    if (set) set.delete(title)
+  }
+  await saveUsedToCloud()
+  renderManage(); updateNavBadges()
+  FORMAT_KEYS.forEach(f => updateFilterPage(f)); renderOverview()
+  buildTagMatrix(); renderHeatmap()
+  showToast('已删除单条记录', 'info')
+  // 关闭弹窗并刷新列表
+  closeTopModal()
+  showUsedList(type, kind, destId || null)
+}
+// 通用 modal 工具（与项目里 keywordTplEditorModal 风格一致）
+function showModal({ title, body, footer }) {
+  const existing = document.getElementById('customInfoModal'); if (existing) existing.remove()
+  const wrap = document.createElement('div'); wrap.className = 'modal show'; wrap.id = 'customInfoModal'
+  wrap.innerHTML = '<div class="modal-content" style="max-width:560px;max-height:80vh;overflow-y:auto" onclick="event.stopPropagation()">' +
+    '<div class="modal-title">' + title + '</div>' +
+    '<div style="margin:12px 0">' + body + '</div>' +
+    '<div style="display:flex;justify-content:flex-end;gap:8px">' + (footer || '') + '</div>' +
+    '</div>'
+  wrap.onclick = () => wrap.remove()
+  document.body.appendChild(wrap)
+}
+function closeTopModal() { const m = document.getElementById('customInfoModal'); if (m) m.remove() }
+function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]) }
+// 用于嵌入 HTML onclick="..." 属性的 JS 字符串字面量：转义 HTML 实体 + JS 单引号反斜杠
+function escapeAttr(s) { return String(s).replace(/[&<>"'\\]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','\\':'\\\\'})[c]) }
+
 async function clearUsedArticles(type) {
   if (!confirm('确认清空「' + type + '」的所有已用记录？')) return
   state.usedArticlesByType[type] = new Set()
+  state.usedVideoArticles[type] = {}
   await saveUsedToCloud(); renderManage(); updateNavBadges()
   FORMAT_KEYS.forEach(f => updateFilterPage(f)); renderOverview()
   buildTagMatrix(); renderHeatmap()
   showToast('已清空「' + type + '」的已用记录','info')
+}
+async function clearVideoUsedArticles(type, destId) {
+  if (!confirm('确认清空「' + type + '」该目标的已导出记录？')) return
+  if (state.usedVideoArticles[type]) {
+    delete state.usedVideoArticles[type][destId]
+  }
+  await saveUsedToCloud(); renderManage(); updateNavBadges()
+  FORMAT_KEYS.forEach(f => updateFilterPage(f)); renderOverview()
+  buildTagMatrix(); renderHeatmap()
+  showToast('已清空','info')
+}
+async function clearNonVideoUsedArticles(type) {
+  if (!confirm('确认清空「' + type + '」其它格式的已导出记录？')) return
+  state.usedArticlesByType[type] = new Set()
+  await saveUsedToCloud(); renderManage(); updateNavBadges()
+  FORMAT_KEYS.forEach(f => updateFilterPage(f)); renderOverview()
+  buildTagMatrix(); renderHeatmap()
+  showToast('已清空','info')
+}
+async function clearVideoUsedByDestOnly(destId) {
+  const destName = (state.destinations.find(d => d.id === destId) || {name:'已删除目标'}).name
+  if (!confirm('确认清空目标「' + destName + '」的所有提示词下的已导出记录？')) return
+  deleteDestIdFromVideoUsedSets(destId)
+  await saveUsedToCloud(); renderManage(); updateNavBadges()
+  FORMAT_KEYS.forEach(f => updateFilterPage(f)); renderOverview()
+  buildTagMatrix(); renderHeatmap()
+  showToast('已清空目标「' + destName + '」全部记录','info')
 }
 
 // ==================== 总览 ====================
@@ -2441,15 +2879,33 @@ function renderOverview() {
     const cfg = PLATFORM_CONFIG[fmt]; let total = 0, avail = 0
     state.types.forEach(t => {
       const td = state.typeData[t] || {}; const files = (td.folderStructure || {})[fmt] || []; total += files.length
-      const usedSet = state.usedArticlesByType[t] || new Set(); avail += files.filter(f => !usedSet.has(f.name)).length
+      const usedSet = getEffectiveUsedSet(t, fmt); avail += files.filter(f => !usedSet.has(f.name)).length
     })
     const used = total - avail, pct = total ? Math.round(used / total * 100) : 0
+    const needDestNote = (fmt === 'video' && !state._videoDestId)
     html += '<div class="platform-card" onclick="switchPage(\'' + fmt + '\')" style="cursor:pointer"><div class="h">' + cfg.icon + ' ' + cfg.label + ' <span style="font-size:11px;color:var(--text-muted);font-weight:400">(' + cfg.ext.toUpperCase() + ')</span></div>' +
-      '<div class="info"><strong>' + total + '</strong> 篇 · 可用 <strong>' + avail + '</strong> 篇 · 已导 <strong>' + used + '</strong> 篇</div>' +
+      '<div class="info">' +
+        (needDestNote
+          ? '<strong>' + total + '</strong> 篇 · <span style="color:var(--danger)">请先选目标</span>'
+          : '<strong>' + total + '</strong> 篇 · 可用 <strong>' + avail + '</strong> 篇 · 已导 <strong>' + used + '</strong> 篇') +
+      '</div>' +
       '<div style="margin-top:8px;height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:linear-gradient(90deg,var(--success),var(--primary));border-radius:3px"></div></div></div>'
   })
   html += '</div><div class="card" style="margin-top:16px"><div class="card-title">📋 各类型已用文章统计</div>'
-  state.types.forEach(t => { const usedSet = state.usedArticlesByType[t] || new Set(); html += '<div style="font-size:13px;margin-bottom:4px">' + t + '：<strong>' + usedSet.size + '</strong> 篇已导出</div>' })
+  state.types.forEach(t => {
+    // 视频：累计所有目标；非视频：单 set（拷贝一份避免污染原 set）
+    const baseSet = new Set(state.usedArticlesByType[t] || [])
+    const videoMap = state.usedVideoArticles[t] || {}
+    let totalCount = baseSet.size, destParts = []
+    for (const [destId, set] of Object.entries(videoMap)) {
+      const dName = (state.destinations.find(x => x.id === destId) || {name:'已删除'}).name
+      destParts.push(dName + ' ' + set.size)
+      for (const n of set) baseSet.add(n)
+    }
+    totalCount = baseSet.size
+    html += '<div style="font-size:13px;margin-bottom:4px">' + t + '：<strong>' + totalCount + '</strong> 篇已导出' +
+      (destParts.length ? ' <span style="color:var(--text-muted);font-size:12px">（视频 · ' + destParts.join('、') + '）</span>' : '') + '</div>'
+  })
   html += '</div>'; c.innerHTML = html
 }
 
@@ -2471,7 +2927,7 @@ async function openBorrowDialog(format, typeIdx) {
   const sources = []
   for (const t of state.types) {
     if (t === target.type) continue
-    const usedSet = state.usedArticlesByType[t] || new Set()
+    const usedSet = getEffectiveUsedSet(t, format)
     const files = ((state.typeData[t] || {}).folderStructure || {})[format] || []
     const avail = files.filter(f => !usedSet.has(f.name))
     if (avail.length > 0) sources.push({ name: t, available: avail.length })
@@ -2504,7 +2960,7 @@ function updateBorrowNeed(format, typeIdx) {
   const checked = Array.from(document.querySelectorAll('[data-borrow-type]:checked')).map(el => el.dataset.borrowType)
   let totalAvail = 0
   for (const t of checked) {
-    const usedSet = state.usedArticlesByType[t] || new Set()
+    const usedSet = getEffectiveUsedSet(t, format)
     const files = ((state.typeData[t] || {}).folderStructure || {})[format] || []
     totalAvail += files.filter(f => !usedSet.has(f.name)).length
   }
@@ -2523,7 +2979,7 @@ async function confirmBorrow(format, typeIdx) {
   const borrowedArticles = []  // [{name, fromType}]
   for (const fromType of checked) {
     if (borrowedArticles.length >= need) break
-    const usedSet = state.usedArticlesByType[fromType] || new Set()
+    const usedSet = getEffectiveUsedSet(fromType, format)
     const files = ((state.typeData[fromType] || {}).folderStructure || {})[format] || []
     const pool = files.filter(f => !usedSet.has(f.name))
     shuffleArray(pool)
@@ -2586,7 +3042,13 @@ function renderHistory() {
   let html = ''
   for (const type of state.types) {
     const td = state.typeData[type]
-    const usedSet = state.usedArticlesByType[type] || new Set()
+    // 视频：累计所有目标已用集；非视频：单 set（用 new Set 包一层避免污染原 set）
+    const usedSet = (function(){
+      const baseSet = new Set(state.usedArticlesByType[type] || [])
+      const videoMap = state.usedVideoArticles[type] || {}
+      for (const set of Object.values(videoMap)) for (const n of set) baseSet.add(n)
+      return baseSet
+    })()
     if (!td || !td.folderStructure) { 
       if (usedSet.size > 0) html += '<div class="card"><div class="card-title">🏷️ ' + type + '</div><div class="card-sub">已导出 ' + usedSet.size + ' 篇</div></div>'
       continue
@@ -2675,7 +3137,7 @@ async function changeUploadType(type, fmt) {
   const newType = prompt('请输入新的提示词类型：', type)
   if (!newType || !newType.trim() || newType.trim() === type) return
   const targetType = newType.trim()
-  if (!state.types.includes(targetType)) { state.types.push(targetType); state.usedArticlesByType[targetType] = new Set() }
+  if (!state.types.includes(targetType)) { state.types.push(targetType); state.usedArticlesByType[targetType] = new Set(); state.usedVideoArticles[targetType] = {} }
   const td = state.typeData[type]
   if (td && td.folderStructure && td.folderStructure[fmt]) {
     if (!state.typeData[targetType]) state.typeData[targetType] = { folderStructure: {}, allArticleNames: [], formatFileCounts: {}, rootPath: td.rootPath || '' }
@@ -2692,6 +3154,16 @@ async function changeUploadType(type, fmt) {
     if (!state.usedArticlesByType[targetType]) state.usedArticlesByType[targetType] = new Set()
     for (const t of state.usedArticlesByType[type]) state.usedArticlesByType[targetType].add(t)
     delete state.usedArticlesByType[type]
+  }
+  // 视频二维已用集也要迁移
+  if (state.usedVideoArticles[type]) {
+    if (!state.usedVideoArticles[targetType]) state.usedVideoArticles[targetType] = {}
+    for (const destId of Object.keys(state.usedVideoArticles[type])) {
+      const set = state.usedVideoArticles[type][destId]
+      if (!state.usedVideoArticles[targetType][destId]) state.usedVideoArticles[targetType][destId] = new Set()
+      for (const n of set) state.usedVideoArticles[targetType][destId].add(n)
+    }
+    delete state.usedVideoArticles[type]
   }
   state.uploaded = Object.keys(state.typeData).some(t => Object.keys(state.typeData[t]?.folderStructure || {}).length > 0)
   await saveTypesToCloud()
@@ -2722,14 +3194,31 @@ async function deleteUploadRecord(type, fmt) {
       files.forEach(x => { if (x.storage_path) storagePaths.push(x.storage_path) })
       delete td.folderStructure[fmt]
       // 本地：清理已导出记录
-      const usedSet = state.usedArticlesByType[type]
-      if (usedSet) {
+      if (fmt === 'video') {
+        // 视频：清理每个目标的已用集中不再存在的文件名
         const remainingNames = new Set()
         for (const f of FORMAT_KEYS) {
           (td.folderStructure[f] || []).forEach(x => remainingNames.add(x.name))
         }
-        for (const name of Array.from(usedSet)) {
-          if (!remainingNames.has(name)) usedSet.delete(name)
+        if (state.usedVideoArticles[type]) {
+          for (const [destId, set] of Object.entries(state.usedVideoArticles[type])) {
+            for (const name of Array.from(set)) {
+              if (!remainingNames.has(name)) set.delete(name)
+            }
+            if (set.size === 0) delete state.usedVideoArticles[type][destId]
+          }
+          if (Object.keys(state.usedVideoArticles[type]).length === 0) delete state.usedVideoArticles[type]
+        }
+      } else {
+        const usedSet = state.usedArticlesByType[type]
+        if (usedSet) {
+          const remainingNames = new Set()
+          for (const f of FORMAT_KEYS) {
+            (td.folderStructure[f] || []).forEach(x => remainingNames.add(x.name))
+          }
+          for (const name of Array.from(usedSet)) {
+            if (!remainingNames.has(name)) usedSet.delete(name)
+          }
         }
       }
       if (!Object.keys(td.folderStructure).length) delete state.typeData[type]
@@ -2817,6 +3306,17 @@ async function deleteUploadSession(type, sessionId) {
     td.allArticleNames = Array.from(remainingNames)
 
     // 本地：清理已导出记录
+    // 视频：清理每个目标的已用集中不再存在的文件名
+    if (state.usedVideoArticles[type]) {
+      for (const [destId, set] of Object.entries(state.usedVideoArticles[type])) {
+        for (const name of Array.from(set)) {
+          if (!remainingNames.has(name)) set.delete(name)
+        }
+        if (set.size === 0) delete state.usedVideoArticles[type][destId]
+      }
+      if (Object.keys(state.usedVideoArticles[type]).length === 0) delete state.usedVideoArticles[type]
+    }
+    // 非视频：老的 per-type 已用集
     const usedSet = state.usedArticlesByType[type]
     if (usedSet) {
       for (const name of Array.from(usedSet)) {
