@@ -137,6 +137,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
       <div class="nav-item" data-page="excel" onclick="switchPage('excel')"><span>📊 资讯 (xlsx)</span><span class="nav-badge" id="badge-excel">0</span></div>
       <div class="nav-item" data-page="ptxt" onclick="switchPage('ptxt')"><span>📃 搜狐 (ptxt)</span><span class="nav-badge" id="badge-ptxt">0</span></div>
       <div class="nav-item" data-page="txt" onclick="switchPage('txt')"><span>📝 网易/抖音 (txt)</span><span class="nav-badge" id="badge-txt">0</span></div>
+      <div class="nav-item" data-page="video" onclick="switchPage('video')"><span>🎬 视频 (video)</span><span class="nav-badge" id="badge-video">0</span></div>
+      <div class="nav-item" data-page="image" onclick="switchPage('image')"><span>🖼️ 图文 (image)</span><span class="nav-badge" id="badge-image">0</span></div>
       <div style="height:1px;background:var(--border);margin:8px 0"></div>
       <div class="nav-item" data-page="keywordTemplates" onclick="switchPage('keywordTemplates')"><span>🏷️ 标题模板</span><span class="nav-badge"></span></div>
       <div class="nav-item" data-page="history" onclick="switchPage('history')"><span>📝 上传记录</span><span class="nav-badge"></span></div>
@@ -150,7 +152,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Micr
       <div class="upload-zone" id="uploadZone" onclick="triggerFolderInput()">
         <span class="icon">📂</span>
         <div class="title">拖拽或点击上传文件夹</div>
-        <div class="desc">文章集合 / docx / 标题.docx · excel / 标题.xlsx · ptxt / 标题.ptxt · txt / 标题.txt</div>
+        <div class="desc">文章集合 / docx / 标题.docx · excel / 标题.xlsx · ptxt / 标题.ptxt · txt / 标题.txt · video / 标题.mp4 · image / 标题.jpg</div>
         <button class="btn btn-primary" style="margin-top:16px" onclick="event.stopPropagation();triggerFolderInput()">选择文件夹</button>
       </div>
       <div class="upload-progress-panel" id="uploadProgressPanel" style="display:none">
@@ -666,11 +668,11 @@ function getActiveKeywordTemplateName(format) {
 }
 
 // ==================== 全局常量 ====================
-const FORMAT_KEYS = ['docx', 'excel', 'ptxt', 'txt']
-const PLATFORM_CONFIG = { docx:{icon:'📄',label:'头条',ext:'docx'}, excel:{icon:'📊',label:'资讯文章',ext:'xlsx'}, ptxt:{icon:'📃',label:'搜狐',ext:'ptxt'}, txt:{icon:'📝',label:'网易/抖音',ext:'txt'} }
+const FORMAT_KEYS = ['docx', 'excel', 'ptxt', 'txt', 'video', 'image']
+const PLATFORM_CONFIG = { docx:{icon:'📄',label:'头条',ext:'docx'}, excel:{icon:'📊',label:'资讯文章',ext:'xlsx'}, ptxt:{icon:'📃',label:'搜狐',ext:'ptxt'}, txt:{icon:'📝',label:'网易/抖音',ext:'txt'}, video:{icon:'🎬',label:'视频',ext:'mp4'}, image:{icon:'🖼️',label:'图文',ext:'jpg'} }
 // 每个平台的默认文件夹结构：'subfolder'（分子文件夹）/ 'flat'（不分子文件夹）
 // 头条/资讯/搜狐默认不分子文件夹；网易/抖音默认分子文件夹
-const DEFAULT_FOLDER_MODE = { docx: 'flat', excel: 'flat', ptxt: 'flat', txt: 'subfolder' }
+const DEFAULT_FOLDER_MODE = { docx: 'flat', excel: 'flat', ptxt: 'flat', txt: 'subfolder', video: 'flat', image: 'flat' }
 function getDefaultFolderMode(fmt) { return DEFAULT_FOLDER_MODE[fmt] || 'flat' }
 const S_CITIES = ['上海','北京','广州','南京','香港','新加坡','英国','美国','澳洲']
 const A_CITIES = ['深圳','重庆','苏州','成都','杭州','武汉','宁波','天津','青岛','无锡','长沙','郑州','济南','合肥','福州','泉州']
@@ -956,7 +958,7 @@ async function processFiles(files) {
       if (!fmtDir) {
         // 兜底：根据文件扩展名识别格式
         const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : ''
-        const extMap = { docx: 'docx', xlsx: 'excel', ptxt: 'ptxt', txt: 'txt' }
+        const extMap = { docx: 'docx', xlsx: 'excel', ptxt: 'ptxt', txt: 'txt', mp4: 'video', mov: 'video', jpg: 'image', jpeg: 'image', png: 'image', webp: 'image', gif: 'image' }
         fmtDir = extMap[ext] || 'txt'
       }
       if (!structure[fmtDir]) structure[fmtDir] = []
@@ -1028,7 +1030,7 @@ async function doUploadBatch() {
         if (matchedFmt) fmtDir = matchedFmt
       }
       if (!fmtDir) {
-        const extMap = { docx: 'docx', xlsx: 'excel', ptxt: 'ptxt', txt: 'txt' }
+        const extMap = { docx: 'docx', xlsx: 'excel', ptxt: 'ptxt', txt: 'txt', mp4: 'video', mov: 'video', jpg: 'image', jpeg: 'image', png: 'image', webp: 'image', gif: 'image' }
         fmtDir = extMap[ext2] || 'txt'
       }
       const articleName = fileName2.replace(/\.[^.]+$/, '')
