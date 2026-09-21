@@ -2484,6 +2484,154 @@ const exportQueue = []          // 等待执行的平台
 const exportingFormats = new Set() // 已入队/正在导出（防连点）
 let exportRunning = false
 
+// ==================== 视频导出包：articles-N.xlsx ====================
+// 抖音发布工具要求的包结构：解压后 = 若干「标题.mp4」（平铺）+ 一个 articles-1.xlsx
+// 表格 3 列：视频（发布工具所在机器的本地绝对路径，前缀写死）| 标题 | 简介（= 同标题的 txt 文案全文）
+const VIDEO_LOCAL_PREFIX = 'C:\\Users\\Administrator\\Desktop\\抖音发布\\'
+const XLSX_HEADERS = ['视频', '标题', '简介']
+const XLSX_COL = i => String.fromCharCode(65 + i)
+// 简介列（C 列）用 s="1"：自动换行 + 顶端对齐，长文案才能在表格里正常看
+const XLSX_INTRO_COL = 2
+
+// XML 转义：& < > " ' 之外，还要剔除 XML 1.0 非法控制字符（\t \n \r 保留）
+function xmlEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
+}
+
+// 生成最小可用 xlsx（sharedStrings 版，Excel / WPS / openpyxl 均可正常读写）
+async function buildArticlesXlsx(rows) {
+  const all = [XLSX_HEADERS].concat(rows.map(r => [r.video, r.title, r.intro]))
+  // 共享字符串表（去重，和标准 xlsx 一致）
+  const sst = []; const idxMap = new Map()
+  const sid = v => {
+    const k = String(v == null ? '' : v)
+    if (!idxMap.has(k)) { idxMap.set(k, sst.length); sst.push(k) }
+    return idxMap.get(k)
+  }
+  const sheetData = all.map((cells, ri) =>
+    '<row r="' + (ri + 1) + '">' + cells.map((v, ci) =>
+      '<c r="' + XLSX_COL(ci) + (ri + 1) + '"' + (ci === XLSX_INTRO_COL ? ' s="1"' : '') + ' t="s"><v>' + sid(v) + '</v></c>'
+    ).join('') + '</row>'
+  ).join('')
+  const H = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+  const contentTypes = H + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+    '<Default Extension="xml" ContentType="application/xml"/>' +
+    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+    '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+    '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>' +
+    '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
+    '</Types>'
+  const rootRels = H + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' +
+    '</Relationships>'
+  const workbook = H + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+    '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>'
+  const wbRels = H + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
+    '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>' +
+    '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+    '</Relationships>'
+  const sheet = H + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<dimension ref="A1:' + XLSX_COL(XLSX_HEADERS.length - 1) + all.length + '"/>' +
+    '<sheetViews><sheetView tabSelected="1" workbookViewId="0"/></sheetViews>' +
+    '<sheetFormatPr defaultRowHeight="17.6"/>' +
+    '<sheetData>' + sheetData + '</sheetData>' +
+    '<pageMargins left="0.75" right="0.75" top="1" bottom="1" header="0.5" footer="0.5"/>' +
+    '</worksheet>'
+  // 不引用 theme（避免缺 theme1.xml 触发"文件损坏"）→ 字体用 rgb 写死
+  const styles = H + '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<fonts count="1"><font><sz val="11"/><color rgb="FF000000"/><name val="宋体"/><charset val="134"/></font></fonts>' +
+    '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>' +
+    '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+    '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf></cellXfs>' +
+    '<cellStyles count="1"><cellStyle name="常规" xfId="0" builtinId="0"/></cellStyles>' +
+    '<dxfs count="0"/>' +
+    '<tableStyles count="0" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleLight16"/>' +
+    '</styleSheet>'
+  const sstXml = H + '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="' + (all.length * XLSX_HEADERS.length) + '" uniqueCount="' + sst.length + '">' +
+    sst.map(s => '<si><t xml:space="preserve">' + xmlEsc(s) + '</t></si>').join('') + '</sst>'
+  const z = new JSZip()
+  z.file('[Content_Types].xml', contentTypes)
+  z.file('_rels/.rels', rootRels)
+  z.file('xl/workbook.xml', workbook)
+  z.file('xl/_rels/workbook.xml.rels', wbRels)
+  z.file('xl/worksheets/sheet1.xml', sheet)
+  z.file('xl/sharedStrings.xml', sstXml)
+  z.file('xl/styles.xml', styles)
+  return await z.generateAsync({ type:'uint8array', compression:'DEFLATE', compressionOptions:{ level:6 } })
+}
+
+// 取「简介」：按标题找同名的 txt 文案，取全文（含首行标题、全角空格缩进）
+function decodeUtf8Text(buf) {
+  try {
+    return new TextDecoder('utf-8').decode(buf).replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  } catch(e) { return '' }
+}
+async function getVideoIntroText(title, sourceType) {
+  // 1) 内存里的 txt 文件（同类型优先，其次其它类型）：有 storage_path 走云端，有 file 走本地
+  const typeOrder = []
+  if (state.typeData[sourceType]) typeOrder.push(sourceType)
+  for (const t of Object.keys(state.typeData)) if (t !== sourceType) typeOrder.push(t)
+  for (const t of typeOrder) {
+    const files = ((state.typeData[t] || {}).folderStructure || {})['txt'] || []
+    const f = files.find(x => x.name === title)
+    if (!f) continue
+    if (f.storage_path) return decodeUtf8Text(await downloadFromStorage(f.storage_path))
+    if (f.file) return decodeUtf8Text(await readFile(f.file))
+  }
+  // 2) 兜底：内存里没有 → 查云端 articles（format=txt），先同类型再全表
+  const pick = async (withType) => {
+    let q = supabaseClient.from('articles').select('storage_path').eq('format', 'txt').eq('title', title)
+    if (withType) q = q.eq('type', sourceType)
+    const { data } = await q.limit(5)
+    const hit = (data || []).find(r => r.storage_path)
+    return hit ? decodeUtf8Text(await downloadFromStorage(hit.storage_path)) : ''
+  }
+  return (await pick(true)) || (await pick(false))
+}
+
+// 小并发池：简介要逐个下载 txt，串行太慢
+async function mapWithLimit(items, limit, fn) {
+  const out = new Array(items.length)
+  let i = 0
+  await Promise.all(Array(Math.min(limit, items.length)).fill().map(async () => {
+    while (i < items.length) { const idx = i++; out[idx] = await fn(items[idx]) }
+  }))
+  return out
+}
+
+// 把表格塞进 zip：flat=根目录一个 articles-1.xlsx；subfolder=每类型子文件夹一个，按类型顺序编号
+async function appendVideoXlsxToZip(zip, tasks, typeGroups, format) {
+  const okTasks = tasks.filter(t => t.ok)
+  if (!okTasks.length) return
+  const buildRows = list => mapWithLimit(list, 6, async t => {
+    const intro = await getVideoIntroText(t.m.name, t.sourceType)
+    if (!intro) console.warn('[xlsx] 未找到同标题 txt 文案，简介留空:', t.m.name)
+    return { video: VIDEO_LOCAL_PREFIX + t.m.name + '.mp4', title: t.m.name, intro }
+  })
+  if (state.filters[format].folderMode === 'flat') {
+    const rows = await buildRows(okTasks)
+    zip.file('articles-1.xlsx', await buildArticlesXlsx(rows))
+    log(format, '  📊 articles-1.xlsx（' + rows.length + ' 行）\n','info')
+    return
+  }
+  let n = 1
+  for (const g of typeGroups) {
+    const list = okTasks.filter(t => t.targetType === g.type)
+    if (!list.length) continue
+    const rows = await buildRows(list)
+    zip.file(g.type + '/articles-' + n + '.xlsx', await buildArticlesXlsx(rows))
+    log(format, '  📊 ' + g.type + '/articles-' + n + '.xlsx（' + rows.length + ' 行）\n','info')
+    n++
+  }
+}
+
 function exportFormat(format) {
   const cfg = PLATFORM_CONFIG[format]
   // 视频必须先选分发目标（防误用 + 数据完整性）
@@ -2621,6 +2769,15 @@ async function exportFormatNow(format) {
     showProgress(format, false)
     return false
   }
+  // === 视频专用：mp4 + articles-N.xlsx（表格里带标题/简介，供抖音批量发布工具读取）===
+  if (format === 'video') {
+    log(format, '\n正在生成发布表格...\n','info')
+    try { await appendVideoXlsxToZip(zip, tasks, typeGroups, format) }
+    catch(e) {
+      log(format, '  ⚠ 表格生成失败：' + e.message + '（mp4 仍会正常打包，请重试导出）\n','warn')
+      showToast('表格生成失败，包内只有 mp4', 'error')
+    }
+  }
   log(format, '\n正在打包...\n','info')
   try {
     const blob = await zip.generateAsync({ type:'blob', compression:'DEFLATE', compressionOptions:{ level:6 } },
@@ -2647,10 +2804,12 @@ async function exportFormatNow(format) {
       if (format === 'video') {
         const destId = state._videoDestId
         if (destId) for (const n of names) addToVideoUsedSet(sourceType, destId, n)
-      } else {
-        const usedSet = state.usedArticlesByType[sourceType] || new Set()
-        names.forEach(n => usedSet.add(n))  // 标记源类型已用
+        // 视频：只打"当前目标已用"标记，云端 articles 与本地结构都不动
+        // （保留视频本身，同一视频仍可导出给其它分发目标）
+        continue
       }
+      const usedSet = state.usedArticlesByType[sourceType] || new Set()
+      names.forEach(n => usedSet.add(n))  // 标记源类型已用
       // 删除 typeData 文件
       const ttd = state.typeData[sourceType]
       if (ttd && ttd.folderStructure && ttd.folderStructure[format]) {
