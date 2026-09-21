@@ -380,8 +380,14 @@ async function loadAllFromCloud() {
         if (!state.typeData[a.type]) state.typeData[a.type] = { folderStructure: {}, allArticleNames: [], formatFileCounts: {}, rootPath: a.type + '/cloud' }
         if (!state.typeData[a.type].folderStructure[a.format]) state.typeData[a.type].folderStructure[a.format] = []
         state.typeData[a.type].folderStructure[a.format].push({
-          name: a.title, fullName: a.title + '.' + ({docx:'docx',excel:'xlsx',ptxt:'ptxt',txt:'txt'}[a.format] || a.format),
-          storage_path: a.storage_path, city: a.city, keywords: a.keywords || [], created_at: a.created_at
+          name: a.title,
+          // 扩展名必须走 PLATFORM_CONFIG：旧写法硬编码只认 docx/excel/ptxt/txt，
+          // video/image 会退化成 "标题.video" / "标题.image"，导出文件名全错
+          fullName: a.title + '.' + ((PLATFORM_CONFIG[a.format] || {}).ext || a.format),
+          storage_path: a.storage_path,
+          // 保留原始文件名（带 .mp4/.jpg 真实后缀），导出打包优先用它
+          original_file: a.original_file || (a.title + '.' + ((PLATFORM_CONFIG[a.format] || {}).ext || a.format)),
+          city: a.city, keywords: a.keywords || [], created_at: a.created_at
         })
         if (!state.typeData[a.type].allArticleNames.includes(a.title)) state.typeData[a.type].allArticleNames.push(a.title)
         state.typeData[a.type].formatFileCounts[a.format] = (state.typeData[a.type].formatFileCounts[a.format] || 0) + 1
