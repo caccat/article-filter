@@ -2134,23 +2134,58 @@ function renderKeywordStats(format, finalTitles, totalNeeded) {
 function shuffleArray(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]] } }
 
 // ==================== 导出 ====================
-async function exportFormat(format) {
+// ==================== 导出队列（多平台自动串行）====================
+// 设计：每个平台点「导出」即入队；同一时刻只跑一个平台，跑完自动接下一个。
+// 原因：zip.generateAsync(DEFLATE) 在主线程串行执行，真并发不会更快，
+//       还会引发浏览器多次下载拦截、used_articles 全删全插的并发覆盖。
+const exportQueue = []          // 等待执行的平台
+const exportingFormats = new Set() // 已入队/正在导出（防连点）
+let exportRunning = false
+
+function exportFormat(format) {
+  const cfg = PLATFORM_CONFIG[format]
+  if (!state.filters[format].preview) { showToast('请先生成预览','error'); return }
+  if (exportingFormats.has(format)) { showToast('「' + cfg.label + '」已在导出队列中','info'); return }
+  exportingFormats.add(format)
+  exportQueue.push(format)
+  const btn = document.getElementById('btnExport-' + format)
+  if (btn) btn.disabled = true
+  if (exportRunning) {
+    log(format, '⏳ 已加入导出队列，等待前面的平台完成后自动开始...\n','info')
+    showToast('「' + cfg.label + '」已加入导出队列', 'info')
+  }
+  runExportQueue()
+}
+async function runExportQueue() {
+  if (exportRunning) return
+  exportRunning = true
+  try {
+    while (exportQueue.length) {
+      const fmt = exportQueue.shift()
+      const ok = await exportFormatNow(fmt)
+      exportingFormats.delete(fmt)
+      // 未实际导出（校验不通过/失败）→ 解锁按钮允许重试；成功则保持禁用（预览已消费）
+      if (!ok) { const b = document.getElementById('btnExport-' + fmt); if (b) b.disabled = false }
+    }
+  } finally { exportRunning = false }
+}
+async function exportFormatNow(format) {
   const pData = state.filters[format].preview
-  if (!pData) { showToast('请先生成预览','error'); return }
+  if (!pData) { showToast('请先生成预览','error'); return false }
   // 兼容旧版预览结构（{assignments}）→ 包装成新的 {typeGroups}
   let typeGroups = pData.typeGroups
   if (!typeGroups && pData.assignments) {
     const firstType = state.filters[format].activeType || state.activeType
     typeGroups = [{ type: firstType, targetCount: pData.assignments.reduce((s,a)=>s+a.count,0), actualCount: pData.assignments.reduce((s,a)=>s+a.articles.length,0), noArticles: false, assignments: pData.assignments }]
   }
-  if (!typeGroups || !typeGroups.length) { showToast('没有可导出的内容','error'); return }
+  if (!typeGroups || !typeGroups.length) { showToast('没有可导出的内容','error'); return false }
   // 拦截：有无文章且未借调完成的类型
   const noArtTypes = typeGroups.filter(g => g.noArticles && g.actualCount < g.targetCount)
-  if (noArtTypes.length > 0) { showToast('以下类型没有可用文章且未完成借调：' + noArtTypes.map(g => g.type).join('、'), 'error'); return }
+  if (noArtTypes.length > 0) { showToast('以下类型没有可用文章且未完成借调：' + noArtTypes.map(g => g.type).join('、'), 'error'); return false }
   const cfg = PLATFORM_CONFIG[format]
   // 校验比例必须 = 100%
   const pctErr = validateActiveTypePct(format)
-  if (pctErr) { showToast(pctErr, 'error'); return }
+  if (pctErr) { showToast(pctErr, 'error'); return false }
 
   // 收集所有下载任务：每个任务包含 (zipPath, sourceFile, sourceType, targetType, city)
   const tasks = []
@@ -2182,7 +2217,7 @@ async function exportFormat(format) {
       }
     }
   }
-  if (!tasks.length) { showToast('没有需要导出的文件','error'); return }
+  if (!tasks.length) { showToast('没有需要导出的文件','error'); return false }
 
   showProgress(format, true)
   const d = new Date()
@@ -2278,7 +2313,8 @@ async function exportFormat(format) {
     await saveUsedToCloud()
     saveStateToStorage(); updateFilterPage(format); updateNavBadges(); renderOverview()
     buildTagMatrix(); renderHeatmap()
-  } catch(e) { log(format, '\n❌ 失败: ' + e.message + '\n','error'); showToast('导出失败','error'); showProgress(format, false) }
+    return true
+  } catch(e) { log(format, '\n❌ 失败: ' + e.message + '\n','error'); showToast('导出失败','error'); showProgress(format, false); return false }
 }
 function readFile(f) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(); r.readAsArrayBuffer(f) }) }
 async function extractDocxText(buf) {
