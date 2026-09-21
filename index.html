@@ -415,6 +415,14 @@ function saveFiltersToCloud() {
     _filterSaveChain = _filterSaveChain.then(doSaveFiltersToCloud).catch(e => console.error('[saveFiltersToCloud]', e))
   }, 500)
 }
+// 页面关闭/切后台时，把待写的防抖任务立刻落库，避免丢失最后一次改动
+window.addEventListener('pagehide', () => {
+  if (_filterSaveTimer) {
+    clearTimeout(_filterSaveTimer)
+    _filterSaveTimer = null
+    doSaveFiltersToCloud()
+  }
+})
 async function doSaveFiltersToCloud() {
   try {
     await supabaseClient.from('filter_configs').delete().neq('format', '_')
@@ -2162,9 +2170,17 @@ async function runExportQueue() {
   try {
     while (exportQueue.length) {
       const fmt = exportQueue.shift()
-      const ok = await exportFormatNow(fmt)
+      let ok = false
+      // 异常兜底：exportFormatNow 前置处理在其内部 try 之外，抛错时不能卡死队列
+      try { ok = await exportFormatNow(fmt) }
+      catch(e) {
+        console.error('[exportQueue]', fmt, e)
+        log(fmt, '\n❌ 导出异常: ' + e.message + '\n','error')
+        showToast('导出异常：' + e.message, 'error')
+        showProgress(fmt, false)
+      }
       exportingFormats.delete(fmt)
-      // 未实际导出（校验不通过/失败）→ 解锁按钮允许重试；成功则保持禁用（预览已消费）
+      // 未实际导出（校验不通过/失败/异常）→ 解锁按钮允许重试；成功则保持禁用（预览已消费）
       if (!ok) { const b = document.getElementById('btnExport-' + fmt); if (b) b.disabled = false }
     }
   } finally { exportRunning = false }
