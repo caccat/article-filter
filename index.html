@@ -256,7 +256,13 @@ async function uploadFileToStorage(file, path) {
   return path
 }
 async function downloadFromStorage(path) {
-  const { data, error } = await supabaseClient.storage.from(STORAGE_BUCKET).download(path)
+  // 加 60s 超时兜底：网络异常时 fetch 可能永远挂起，导致"加载中..."永不结束
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('下载超时（60秒），请检查网络后重试')), 60000))
+  const { data, error } = await Promise.race([
+    supabaseClient.storage.from(STORAGE_BUCKET).download(path),
+    timeout
+  ])
   if (error) { console.error('下载失败', path, error); throw error }
   return await data.arrayBuffer()
 }
@@ -2336,9 +2342,13 @@ function renderCitiesBlock(format, g, ti, fromIdx) {
     const warnHtml = a.warnings && a.warnings.length ? '<span style="color:var(--warning);font-size:11px;display:block">⚠️ ' + a.warnings[0].message + '</span>' : ''
     const articlesHtml = display.map(n => {
       const safeName = n.replace(/'/g, '&#39;').replace(/"/g, '&quot;')
+      // 视频是 mp4 二进制，无法（也不应）做文本预览，不渲染按钮避免误导
+      const viewBtn = format === 'video'
+        ? '<span style="font-size:11px;color:var(--text-muted)">🎬 视频文件</span>'
+        : '<button class="btn btn-sm btn-outline" style="padding:2px 8px;font-size:11px">查看全文</button>'
       return '<div data-type="' + g.type + '" data-art="' + safeName + '" class="preview-article-row" style="padding:4px 8px;background:#f8fafc;border-radius:4px;margin-bottom:3px;cursor:pointer;font-size:13px;display:flex;justify-content:space-between;align-items:center">' +
         '<span>📄 ' + n + '</span>' +
-        '<button class="btn btn-sm btn-outline" style="padding:2px 8px;font-size:11px">查看全文</button>' +
+        viewBtn +
       '</div>'
     }).join('')
     const expandBtn = isLong ? '<div style="margin-top:6px"><button class="btn btn-sm btn-outline" onclick="toggleArticles(\'' + format + '\',\'type' + ti + '-city' + realIdx + '\',this)" data-full="' + a.articles.join('&#10;').replace(/"/g, '&quot;') + '">展开剩余 ' + (a.articles.length - 5) + ' 篇 ▼</button></div>' : ''
@@ -2367,6 +2377,8 @@ function bindArticleViewers(container, format) {
   container.querySelectorAll('.preview-article-row').forEach(row => {
     row.onclick = async (e) => {
       e.stopPropagation()
+      // 视频文件是 mp4 二进制：文本预览无意义且会把大文件塞进 DOM 导致页面假死
+      if (fmt === 'video') { showToast('视频文件不支持文本预览，请导出后本地查看', 'info'); return }
       const type = row.dataset.type
       const name = row.dataset.art
       const td = state.typeData[type] || {}
@@ -2587,6 +2599,7 @@ async function exportFormatNow(format) {
           log(format, '  ⚠ ' + t.m.fullName + ': 文件不可用（请重新上传）\n','warn'); continue
         }
         zip.file(t.zipPath, fileContent)
+        t.ok = true
         log(format, '  ✓ [' + t.targetType + '/' + t.city + '] ' + t.zipPath.split('/').pop() + '\n','success')
         processed++
         updateProgress(format, processed, tasks.length, t.m.fullName)
@@ -2595,6 +2608,13 @@ async function exportFormatNow(format) {
     }
   }
   await Promise.all(Array(Math.min(CONCURRENCY, tasks.length)).fill().map(() => worker()))
+  // 一个都没下载成功 → 直接中止：不能走"导出成功"分支（否则会误删文章、误标已用）
+  if (!processed) {
+    log(format, '\n❌ 没有文件下载成功，已中止导出（未标记已用、未删除文章）\n','error')
+    showToast('导出失败：没有文件下载成功', 'error')
+    showProgress(format, false)
+    return false
+  }
   log(format, '\n正在打包...\n','info')
   try {
     const blob = await zip.generateAsync({ type:'blob', compression:'DEFLATE', compressionOptions:{ level:6 } },
@@ -2610,7 +2630,9 @@ async function exportFormatNow(format) {
     // 2) 删除每对的 folderStructure[format] + Supabase articles
     // 3) usedArticlesByType: 借调源 + 借调目标 都要标记
     const toCleanByType = {}  // {sourceType: Set(name)}
+    // 只清理"实际下载成功"的文件：下载失败的文件不能被删除/标记已用（否则造成数据丢失）
     for (const t of tasks) {
+      if (!t.ok) continue
       if (!toCleanByType[t.sourceType]) toCleanByType[t.sourceType] = new Set()
       toCleanByType[t.sourceType].add(t.m.name)
     }
